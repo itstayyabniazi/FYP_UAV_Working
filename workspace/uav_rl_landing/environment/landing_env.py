@@ -81,6 +81,7 @@ class LandingEnv(Node):
         self.reset_manager.reset_episode()
         self.action_manager.reset()
         self.action_manager.publish()
+        self.termination_manager.reset()
 
         self._latest_observation = None
         self._spin_until_observation()
