@@ -77,6 +77,12 @@ class RelativeStateNode(Node):
         obs.pitch = self.uav.pitch
         obs.yaw = self.uav.yaw
 
+        # Relative yaw, wrapped to [-pi, pi]
+        obs.rel_yaw = math.atan2(
+            math.sin(self.platform.yaw - self.uav.yaw),
+            math.cos(self.platform.yaw - self.uav.yaw),
+        )
+
         # Platform Velocity
         obs.platform_vx = self.platform.vx
         obs.platform_vy = self.platform.vy

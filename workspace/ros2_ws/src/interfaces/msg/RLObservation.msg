@@ -13,6 +13,9 @@ float64 roll
 float64 pitch
 float64 yaw
 
+# Relative yaw (platform.yaw - uav.yaw, wrapped to [-pi, pi])
+float64 rel_yaw
+
 # Platform velocity
 float64 platform_vx
 float64 platform_vy

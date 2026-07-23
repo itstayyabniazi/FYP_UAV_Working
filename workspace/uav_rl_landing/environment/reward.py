@@ -23,10 +23,10 @@ class RewardManager:
         self.w_suc = sim.w_suc
 
     def position_reward(self,
-                        rel_px,
-                        rel_py):
+                        rel_x,
+                        rel_y):
 
-        distance = np.sqrt(rel_px ** 2 + rel_py ** 2)
+        distance = np.sqrt(rel_x ** 2 + rel_y ** 2)
 
         return self.w_p * distance
 
@@ -64,13 +64,13 @@ class RewardManager:
         reward = 0.0
 
         reward += self.position_reward(
-            observation.rel_p_x,
-            observation.rel_p_y,
+            observation.rel_x,
+            observation.rel_y,
         )
 
         reward += self.velocity_reward(
-            observation.rel_v_x,
-            observation.rel_v_y,
+            observation.rel_vx,
+            observation.rel_vy,
         )
 
         reward += self.heading_reward(

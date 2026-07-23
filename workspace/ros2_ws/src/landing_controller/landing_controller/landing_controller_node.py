@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 
-from interfaces.msg import RLObservation
+from interfaces.msg import LandingCommand
 
 from px4_msgs.msg import OffboardControlMode
 from px4_msgs.msg import TrajectorySetpoint
@@ -21,7 +21,9 @@ class LandingController(Node):
 
         super().__init__("landing_controller")
 
-        self.observation = None
+        # Latest velocity command from the RL agent (uav_rl_landing/environment/action_manager.py).
+        # None until the agent has published at least once.
+        self.command = None
 
         self.offboard_counter = 0
 
@@ -33,9 +35,9 @@ class LandingController(Node):
         )
 
         self.create_subscription(
-            RLObservation,
-            "/rl_observation",
-            self.observation_callback,
+            LandingCommand,
+            "/landing_command",
+            self.command_callback,
             10
         )
 
@@ -64,9 +66,8 @@ class LandingController(Node):
 
         self.get_logger().info("Landing Controller Started")
 
-    def observation_callback(self, msg):
-        self.observation = msg
-        self.get_logger().info("Observation received")
+    def command_callback(self, msg):
+        self.command = msg
 
     def arm(self):
         msg = VehicleCommand()
@@ -108,19 +109,15 @@ class LandingController(Node):
 
     def control_loop(self):
 
-        self.get_logger().info("Timer running")
-
-        if self.observation is None:
+        if self.command is None:
             return
 
         self.offboard_counter += 1
 
-        self.get_logger().info(f"Counter = {self.offboard_counter}")
-
         offboard = OffboardControlMode()
         offboard.timestamp = self.get_clock().now().nanoseconds // 1000
-        offboard.position = True
-        offboard.velocity = False
+        offboard.position = False
+        offboard.velocity = True
         offboard.acceleration = False
         offboard.attitude = False
         offboard.body_rate = False
@@ -130,15 +127,23 @@ class LandingController(Node):
         traj = TrajectorySetpoint()
         traj.timestamp = self.get_clock().now().nanoseconds // 1000
 
-        traj.position[0] = self.observation.rel_x
-        traj.position[1] = self.observation.rel_y
-        traj.position[2] = self.observation.rel_z
+        # PX4 convention: fields not being controlled must be NaN, not 0.0,
+        # or PX4 will also try to honor them as an active (zero) setpoint.
+        nan = float("nan")
+        traj.position[0] = nan
+        traj.position[1] = nan
+        traj.position[2] = nan
+        traj.acceleration[0] = nan
+        traj.acceleration[1] = nan
+        traj.acceleration[2] = nan
+        traj.yaw = nan
 
-        traj.yaw = self.observation.yaw
+        traj.velocity[0] = self.command.vx
+        traj.velocity[1] = self.command.vy
+        traj.velocity[2] = self.command.vz
+        traj.yawspeed = self.command.yaw_rate
 
         self.traj_pub.publish(traj)
-
-        # self.offboard_counter += 1
 
         if self.offboard_counter == 20:
             self.engage_offboard_mode()
