@@ -25,6 +25,7 @@ simulation rather than a fully reset one.
 import numpy as np
 
 from interfaces.msg import UAVState
+from interfaces.msg import PlatformState
 from interfaces.msg import TakeoffSetpoint
 from std_msgs.msg import String
 
@@ -43,6 +44,12 @@ class ResetManager:
         self._uav_state = None
         node.create_subscription(UAVState, "/uav/state", self._on_uav_state, 10)
 
+        # Needed so generate_initial_pose() can offset from where the platform
+        # actually is right now, not a fixed world origin -- important once
+        # it's actually moving (moving_platform_node.py).
+        self._platform_state = None
+        node.create_subscription(PlatformState, "/platform/state", self._on_platform_state, 10)
+
         self._takeoff_setpoint_pub = node.create_publisher(
             TakeoffSetpoint, "/takeoff_setpoint", 10,
         )
@@ -53,21 +60,42 @@ class ResetManager:
     def _on_uav_state(self, msg):
         self._uav_state = msg
 
+    def _on_platform_state(self, msg):
+        self._platform_state = msg
+
     # ---------------------------------------------------------
     # Initial Position Generation
     # ---------------------------------------------------------
 
     def generate_initial_pose(self):
-        """Generate the UAV's initial (x, y, altitude-AGL) target for this episode."""
+        """
+        Generate the UAV's initial (x, y, altitude-AGL) target for this
+        episode. simulation_parameters.init_*_x/y describe an OFFSET from the
+        platform's current position (not an absolute world position) -- so
+        the sampled starting point stays near the platform regardless of
+        where it currently is on its trajectory. Falls back to treating the
+        world origin as the platform's position if no /platform/state has
+        been received yet.
+        """
 
         sim = self.parameters.simulation_parameters
 
         if sim.init_distribution == "normal":
-            x = np.random.normal(sim.init_mu_x, sim.init_sigma_x)
+            offset_x = np.random.normal(sim.init_mu_x, sim.init_sigma_x)
         else:
-            x = np.random.uniform(sim.init_min_x, sim.init_max_x)
+            offset_x = np.random.uniform(sim.init_min_x, sim.init_max_x)
 
-        y = np.random.uniform(sim.init_min_y, sim.init_max_y)
+        offset_y = np.random.uniform(sim.init_min_y, sim.init_max_y)
+
+        if self._platform_state is not None:
+            platform_x = self._platform_state.x
+            platform_y = self._platform_state.y
+        else:
+            platform_x = 0.0
+            platform_y = 0.0
+
+        x = platform_x + offset_x
+        y = platform_y + offset_y
         z = sim.init_altitude
 
         return {"x": float(x), "y": float(y), "z": float(z)}
@@ -128,9 +156,22 @@ class ResetManager:
 
     def reset_platform(self):
         """
-        Reset moving platform. moving_platform_node currently always publishes
-        a stationary platform, so there's nothing to reset yet -- placeholder
-        for once it has an actual trajectory generator.
+        Deliberately a no-op: moving_platform_node.py now drives the platform
+        on a continuous trajectory independent of episode boundaries, the same
+        way a real motorized platform wouldn't pause and reset for each
+        landing attempt. generate_initial_pose() re-samples relative to
+        wherever the platform currently is instead.
+
+        Known limitation: the position-hold takeoff phase (start_takeoff/
+        is_at_target) targets a single fixed point sampled once at the start
+        of reset_episode(), while the platform keeps moving during that
+        several-second hold -- so by the time the episode's RL-controlled
+        phase actually begins, the platform may no longer be as close to the
+        UAV's start position as it was at sampling time. Fine for now (the
+        UAV still starts in the platform's general operating area), but if
+        that turns out to matter, the fix is to re-publish an updated
+        TakeoffSetpoint that tracks the platform during the hold instead of a
+        single static one.
         """
 
-        self.node.get_logger().info("Reset moving platform (no-op: platform is currently stationary)")
+        pass

@@ -131,8 +131,9 @@ class SimulationParameters(UAVParameters):
     def __init__(self):
         super().__init__()
 
-        # Initial UAV position at the beginning of each episode, drawn
-        # relative to the platform's (currently fixed) position
+        # Initial UAV position at the beginning of each episode, drawn as an
+        # offset from the platform's live position (see reset_manager.py's
+        # generate_initial_pose()) -- not an absolute world position.
         self.init_distribution: str = "uniform"  # 'normal' | 'uniform'
         self.init_mu_x: float = 0.0
         self.init_sigma_x: float = 1.5
