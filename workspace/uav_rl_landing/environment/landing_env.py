@@ -76,12 +76,23 @@ class LandingEnv(Node):
                 )
 
     def reset(self):
-        """Reset the episode and return the first discretized state."""
+        """
+        Reset the episode: sample a target pose, fly there for real and hold
+        (position-hold, see reset_manager.py) until converged or a timeout is
+        hit, then hand control to the RL agent's velocity commands and return
+        the first discretized state.
+        """
 
-        self.reset_manager.reset_episode()
+        pose = self.reset_manager.generate_initial_pose()
+        self.reset_manager.start_takeoff(pose)
+        self.reset_manager.reset_platform()
+        self.termination_manager.reset()
+
+        self._wait_for_takeoff(pose)
+
         self.action_manager.reset()
         self.action_manager.publish()
-        self.termination_manager.reset()
+        self.reset_manager.finish_takeoff()
 
         self._latest_observation = None
         self._spin_until_observation()
@@ -91,6 +102,18 @@ class LandingEnv(Node):
         self.episode += 1
 
         return self.discretizer.discretize(self._latest_observation)
+
+    def _wait_for_takeoff(self, pose):
+        timeout_sec = self.parameters.simulation_parameters.takeoff_timeout
+        start = time.time()
+        while not self.reset_manager.is_at_target(pose):
+            if time.time() - start > timeout_sec:
+                self.get_logger().warn(
+                    f"Takeoff did not converge within {timeout_sec}s; "
+                    "starting the episode anyway from wherever the UAV currently is."
+                )
+                return
+            self._spin_for(0.2)
 
     def step(self, action: int):
         """Apply one discrete action, advance one control period, and return

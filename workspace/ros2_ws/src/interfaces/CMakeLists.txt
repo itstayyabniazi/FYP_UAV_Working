@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LandingTarget.msg"
   "msg/RLObservation.msg"
   "msg/LandingCommand.msg"
+  "msg/TakeoffSetpoint.msg"
 
   DEPENDENCIES
   builtin_interfaces

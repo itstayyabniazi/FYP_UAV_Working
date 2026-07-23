@@ -173,6 +173,14 @@ class SimulationParameters(UAVParameters):
         self.success_horizontal_radius: float = 0.35  # [m]
         self.success_max_rel_speed: float = 0.5        # [m/s]
 
+        # Reset/takeoff phase: how close (position, in m / velocity, in m/s)
+        # the UAV must get to the sampled target pose before the RL-controlled
+        # part of the episode is allowed to start, and how long to wait for
+        # that before giving up and starting the episode anyway.
+        self.takeoff_position_tolerance: float = 0.3   # [m]
+        self.takeoff_velocity_tolerance: float = 0.3   # [m/s]
+        self.takeoff_timeout: float = 15.0             # [s]
+
 
 class Parameters:
     def __init__(self):

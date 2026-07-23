@@ -4,6 +4,8 @@ import rclpy
 from rclpy.node import Node
 
 from interfaces.msg import LandingCommand
+from interfaces.msg import TakeoffSetpoint
+from std_msgs.msg import String
 
 from px4_msgs.msg import OffboardControlMode
 from px4_msgs.msg import TrajectorySetpoint
@@ -21,8 +23,15 @@ class LandingController(Node):
 
         super().__init__("landing_controller")
 
-        # Latest velocity command from the RL agent (uav_rl_landing/environment/action_manager.py).
-        # None until the agent has published at least once.
+        # "position" during the reset/takeoff phase (uav_rl_landing/environment/
+        # reset_manager.py flies to + holds a TakeoffSetpoint), "velocity" once
+        # the RL agent's LandingCommand takes over for the episode itself.
+        self.mode = "position"
+
+        # Latest setpoint for each mode. Both start out None -- control_loop()
+        # won't publish anything (and PX4 won't be commanded into offboard/armed)
+        # until the mode currently selected has received at least one setpoint.
+        self.takeoff_setpoint = None
         self.command = None
 
         self.offboard_counter = 0
@@ -38,6 +47,20 @@ class LandingController(Node):
             LandingCommand,
             "/landing_command",
             self.command_callback,
+            10
+        )
+
+        self.create_subscription(
+            TakeoffSetpoint,
+            "/takeoff_setpoint",
+            self.takeoff_setpoint_callback,
+            10
+        )
+
+        self.create_subscription(
+            String,
+            "/landing_controller/control_mode",
+            self.control_mode_callback,
             10
         )
 
@@ -68,6 +91,17 @@ class LandingController(Node):
 
     def command_callback(self, msg):
         self.command = msg
+
+    def takeoff_setpoint_callback(self, msg):
+        self.takeoff_setpoint = msg
+
+    def control_mode_callback(self, msg):
+        if msg.data not in ("position", "velocity"):
+            self.get_logger().warn(f"Ignoring unknown control mode: {msg.data!r}")
+            return
+        if msg.data != self.mode:
+            self.get_logger().info(f"Control mode: {self.mode} -> {msg.data}")
+        self.mode = msg.data
 
     def arm(self):
         msg = VehicleCommand()
@@ -109,15 +143,17 @@ class LandingController(Node):
 
     def control_loop(self):
 
-        if self.command is None:
+        if self.mode == "position" and self.takeoff_setpoint is None:
+            return
+        if self.mode == "velocity" and self.command is None:
             return
 
         self.offboard_counter += 1
 
         offboard = OffboardControlMode()
         offboard.timestamp = self.get_clock().now().nanoseconds // 1000
-        offboard.position = False
-        offboard.velocity = True
+        offboard.position = self.mode == "position"
+        offboard.velocity = self.mode == "velocity"
         offboard.acceleration = False
         offboard.attitude = False
         offboard.body_rate = False
@@ -130,18 +166,28 @@ class LandingController(Node):
         # PX4 convention: fields not being controlled must be NaN, not 0.0,
         # or PX4 will also try to honor them as an active (zero) setpoint.
         nan = float("nan")
-        traj.position[0] = nan
-        traj.position[1] = nan
-        traj.position[2] = nan
         traj.acceleration[0] = nan
         traj.acceleration[1] = nan
         traj.acceleration[2] = nan
-        traj.yaw = nan
 
-        traj.velocity[0] = self.command.vx
-        traj.velocity[1] = self.command.vy
-        traj.velocity[2] = self.command.vz
-        traj.yawspeed = self.command.yaw_rate
+        if self.mode == "position":
+            traj.position[0] = self.takeoff_setpoint.x
+            traj.position[1] = self.takeoff_setpoint.y
+            traj.position[2] = self.takeoff_setpoint.z
+            traj.yaw = self.takeoff_setpoint.yaw
+            traj.velocity[0] = nan
+            traj.velocity[1] = nan
+            traj.velocity[2] = nan
+            traj.yawspeed = nan
+        else:
+            traj.position[0] = nan
+            traj.position[1] = nan
+            traj.position[2] = nan
+            traj.yaw = nan
+            traj.velocity[0] = self.command.vx
+            traj.velocity[1] = self.command.vy
+            traj.velocity[2] = self.command.vz
+            traj.yawspeed = self.command.yaw_rate
 
         self.traj_pub.publish(traj)
 
