@@ -191,10 +191,14 @@ class LandingController(Node):
 
         self.traj_pub.publish(traj)
 
-        if self.offboard_counter == 20:
+        # Retry periodically rather than once: PX4 can reject the first arm
+        # attempt (e.g. "No connection to the GCS" until QGroundControl/a
+        # companion connects) and nothing here currently checks whether it
+        # actually succeeded, so a one-shot attempt would never be retried.
+        if self.offboard_counter >= 20 and (self.offboard_counter - 20) % 100 == 0:
             self.engage_offboard_mode()
 
-        if self.offboard_counter == 25:
+        if self.offboard_counter >= 25 and (self.offboard_counter - 25) % 100 == 0:
             self.arm()
 
 
