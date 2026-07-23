@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-        'relative_state_node = px4_bridge.relative_state_node:main',
+        'uav_state_node = px4_bridge.relative_state_node:main',
         ],
     },
 )

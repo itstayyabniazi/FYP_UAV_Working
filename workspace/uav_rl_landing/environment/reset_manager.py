@@ -1,94 +1,64 @@
 """
 reset_manager.py
 
-Handles episode reset logic.
+Handles episode reset / takeoff logic.
 
-Responsibilities
-----------------
-- Generate initial UAV position
-- Best-effort: reposition the UAV in Gazebo between episodes
-- Wait until simulation topics look valid again
+Flow per episode (orchestrated by landing_env.reset()):
+1. generate_initial_pose() -- sample a target (x, y, init_altitude AGL)
+2. start_takeoff(pose) -- put landing_controller into "position" mode and
+   publish that as its TakeoffSetpoint; PX4 actually flies there.
+3. landing_env spins, polling is_at_target(pose), until convergence or a
+   timeout (parameters.simulation_parameters.takeoff_timeout) is hit.
+4. finish_takeoff() -- switch landing_controller to "velocity" mode, handing
+   control to the RL agent's LandingCommand (via action_manager).
 
-What this can NOT do (and does not pretend to do)
----------------------------------------------------
-Resetting a PX4 SITL + Gazebo Harmonic episode mid-training is a known-hard
-problem: repositioning the Gazebo entity does not reset PX4's internal EKF
-state, arming state, or offboard-mode bookkeeping, all of which need to be
-consistent again before the next episode can safely command velocities. This
-class only attempts the Gazebo-side entity pose reset (via
-ros_gz_interfaces/srv/SetEntityPose, best-effort, logged if unavailable) and
-leaves the PX4-side state-reset problem for you to design deliberately
-(common approaches: fully respawn the PX4+Gazebo process per episode, or
-disarm/re-trigger the arm+offboard sequence and accept the EKF settling time
-as part of the episode boundary). This has not been exercised against a live
-Gazebo Harmonic instance -- verify the service name/type/world name for your
-world before relying on it.
+This does NOT attempt to teleport the Gazebo entity (an earlier version tried
+ros_gz_interfaces/SetEntityPose): flying to the target for real is more
+reliable -- a teleport leaves PX4's EKF believing it's still where it was,
+fighting the discontinuity -- and it's the only approach that still makes
+sense once the moving platform actually moves. There is currently no
+equivalent of the paper's /gazebo/reset_world for PX4 SITL + Gazebo Harmonic
+in this repo: episodes fly back-to-back in one continuously running
+simulation rather than a fully reset one.
 """
 
 import numpy as np
 
+from interfaces.msg import UAVState
+from interfaces.msg import TakeoffSetpoint
+from std_msgs.msg import String
+
 
 class ResetManager:
 
-    def __init__(self, node, parameters, world_name: str = "default", model_name: str = "x500"):
+    def __init__(self, node, parameters):
         """
         node : rclpy.node.Node
-            The owning node, used for logging and to create the (optional)
-            Gazebo reset service client.
-        world_name : str
-            Name of the Gazebo world, as used in the ros_gz service namespace
-            /world/<world_name>/set_pose. Check your world's SDF / launch file.
-        model_name : str
-            Name of the UAV model/entity in Gazebo.
+            The owning node, used to create subscriptions/publishers.
         """
 
         self.node = node
         self.parameters = parameters
-        self.world_name = world_name
-        self.model_name = model_name
 
-        self._set_pose_client = None
-        try:
-            from ros_gz_interfaces.srv import SetEntityPose
-            self._set_pose_client = node.create_client(
-                SetEntityPose, f"/world/{world_name}/set_pose"
-            )
-        except ImportError:
-            node.get_logger().warn(
-                "ros_gz_interfaces not available; Gazebo entity pose reset is disabled. "
-                "Episodes will run back-to-back without repositioning the UAV."
-            )
+        self._uav_state = None
+        node.create_subscription(UAVState, "/uav/state", self._on_uav_state, 10)
 
-    # ---------------------------------------------------------
-    # Public API
-    # ---------------------------------------------------------
+        self._takeoff_setpoint_pub = node.create_publisher(
+            TakeoffSetpoint, "/takeoff_setpoint", 10,
+        )
+        self._control_mode_pub = node.create_publisher(
+            String, "/landing_controller/control_mode", 10,
+        )
 
-    def reset_episode(self):
-        """
-        Main function called every episode.
-
-        Returns
-        -------
-        dict
-            Initial state information (target x/y/z for the UAV).
-        """
-
-        initial_pose = self.generate_initial_pose()
-
-        self.reset_uav(initial_pose)
-
-        self.reset_platform()
-
-        self.wait_until_ready()
-
-        return initial_pose
+    def _on_uav_state(self, msg):
+        self._uav_state = msg
 
     # ---------------------------------------------------------
     # Initial Position Generation
     # ---------------------------------------------------------
 
     def generate_initial_pose(self):
-        """Generate the UAV's initial position according to parameters.py."""
+        """Generate the UAV's initial (x, y, altitude-AGL) target for this episode."""
 
         sim = self.parameters.simulation_parameters
 
@@ -103,40 +73,54 @@ class ResetManager:
         return {"x": float(x), "y": float(y), "z": float(z)}
 
     # ---------------------------------------------------------
-    # UAV Reset
+    # Takeoff (position-hold phase)
     # ---------------------------------------------------------
 
-    def reset_uav(self, pose):
-        """
-        Best-effort: move the UAV entity to `pose` in Gazebo.
+    def start_takeoff(self, pose):
+        """Command landing_controller into position-hold mode, targeting `pose`."""
 
-        Does NOT reset PX4's EKF/arming/offboard state -- see module docstring.
-        """
+        self.node.get_logger().info(f"Takeoff -> {pose}")
 
-        self.node.get_logger().info(f"Reset UAV -> {pose}")
+        mode_msg = String()
+        mode_msg.data = "position"
+        self._control_mode_pub.publish(mode_msg)
 
-        if self._set_pose_client is None:
-            return
+        setpoint = TakeoffSetpoint()
+        setpoint.x = pose["x"]
+        setpoint.y = pose["y"]
+        setpoint.z = -pose["z"]  # altitude AGL -> PX4 local NED (z down positive)
+        setpoint.yaw = 0.0
+        self._takeoff_setpoint_pub.publish(setpoint)
 
-        if not self._set_pose_client.wait_for_service(timeout_sec=1.0):
-            self.node.get_logger().warn(
-                f"/world/{self.world_name}/set_pose service not available; "
-                "skipping Gazebo entity pose reset for this episode."
-            )
-            return
+    def is_at_target(self, pose) -> bool:
+        """True once /uav/state has converged on `pose` within tolerance."""
 
-        from ros_gz_interfaces.srv import SetEntityPose
-        from ros_gz_interfaces.msg import Entity
+        if self._uav_state is None:
+            return False
 
-        request = SetEntityPose.Request()
-        request.entity = Entity()
-        request.entity.name = self.model_name
-        request.pose.position.x = pose["x"]
-        request.pose.position.y = pose["y"]
-        request.pose.position.z = pose["z"]
-        request.pose.orientation.w = 1.0
+        sim = self.parameters.simulation_parameters
+        target_z_ned = -pose["z"]
 
-        self._set_pose_client.call_async(request)
+        position_error = float(np.linalg.norm([
+            self._uav_state.x - pose["x"],
+            self._uav_state.y - pose["y"],
+            self._uav_state.z - target_z_ned,
+        ]))
+        speed = float(np.linalg.norm([
+            self._uav_state.vx, self._uav_state.vy, self._uav_state.vz,
+        ]))
+
+        return (
+            position_error <= sim.takeoff_position_tolerance
+            and speed <= sim.takeoff_velocity_tolerance
+        )
+
+    def finish_takeoff(self):
+        """Hand control back to the RL agent's velocity commands."""
+
+        mode_msg = String()
+        mode_msg.data = "velocity"
+        self._control_mode_pub.publish(mode_msg)
 
     # ---------------------------------------------------------
     # Platform Reset
@@ -150,13 +134,3 @@ class ResetManager:
         """
 
         self.node.get_logger().info("Reset moving platform (no-op: platform is currently stationary)")
-
-    # ---------------------------------------------------------
-    # Synchronization
-    # ---------------------------------------------------------
-
-    def wait_until_ready(self):
-        """Give topics/services a moment to settle after a reset."""
-
-        import time
-        time.sleep(1.0)

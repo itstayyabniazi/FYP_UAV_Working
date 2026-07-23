@@ -19,7 +19,7 @@ class RelativeStateNode(Node):
 
     def __init__(self):
 
-        super().__init__("relative_state_node")
+        super().__init__("uav_state_node")
 
         self.position = None
         self.attitude = None
