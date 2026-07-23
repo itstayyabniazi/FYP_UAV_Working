@@ -1,8 +1,6 @@
-import rospy
-
 from copy import deepcopy
 
-from training_q_learning.msg import Action
+from interfaces.msg import LandingCommand
 
 from config.parameters import Parameters
 
@@ -13,12 +11,18 @@ class ActionManager:
 
     Responsibilities
     ----------------
-    • Maintain current control commands.
-    • Update commands from RL actions.
-    • Publish commands to ROS.
+    - Maintain current control commands (vx, vy, vz, yaw_rate).
+    - Update commands from the RL agent's discrete action.
+    - Publish commands to ROS 2 as interfaces/msg/LandingCommand, consumed by
+      landing_controller_node to drive PX4 offboard velocity control.
     """
 
-    def __init__(self, parameters: Parameters):
+    def __init__(self, node, parameters: Parameters):
+        """
+        node : rclpy.node.Node
+            The owning node, used to create the publisher. ActionManager is not
+            itself a Node -- rclpy publishers/subscriptions must be owned by one.
+        """
 
         self.parameters = parameters
 
@@ -26,16 +30,14 @@ class ActionManager:
             self.parameters.uav_parameters.initial_action_values
         )
 
-        self.publisher = rospy.Publisher(
-            "training_action_interface/action_to_interface",
-            Action,
-            queue_size=1,
+        self.publisher = node.create_publisher(
+            LandingCommand,
+            "/landing_command",
+            10,
         )
 
     def reset(self):
-        """
-        Reset actions to their initial values.
-        """
+        """Reset actions to their initial values."""
 
         self.action_values = deepcopy(
             self.parameters.uav_parameters.initial_action_values
@@ -43,50 +45,46 @@ class ActionManager:
 
     def update(self, action: int):
         """
-        Update action values using the discrete action selected
-        by the RL agent.
+        Update action values using the discrete action selected by the RL
+        agent. Only vx is controlled by the agent in this MVP; vy, vz and
+        yaw_rate stay at their initial (fixed) values.
         """
 
         action_name = self.parameters.uav_parameters.action_strings[action]
 
-        delta = self.parameters.uav_parameters.action_delta_values["pitch"]
+        delta = self.parameters.uav_parameters.action_delta_values["vx"]
+        max_vx = self.parameters.uav_parameters.action_max_values["vx"]
 
-        max_pitch = self.parameters.uav_parameters.action_max_values["pitch"]
+        if action_name == "increase_vx":
+            self.action_values["vx"] += delta
 
-        if action_name == "increase_pitch":
-
-            self.action_values["pitch"] += delta
-
-        elif action_name == "decrease_pitch":
-
-            self.action_values["pitch"] -= delta
+        elif action_name == "decrease_vx":
+            self.action_values["vx"] -= delta
 
         elif action_name == "do_nothing":
-
             pass
 
-        self.action_values["pitch"] = max(
-            -max_pitch,
-            min(max_pitch, self.action_values["pitch"])
+        else:
+            raise ValueError(f"Unknown action: {action_name}")
+
+        self.action_values["vx"] = max(
+            -max_vx,
+            min(max_vx, self.action_values["vx"])
         )
 
     def publish(self):
-        """
-        Publish current control command.
-        """
+        """Publish the current control command."""
 
-        msg = Action()
+        msg = LandingCommand()
 
-        msg.pitch = self.action_values["pitch"]
-        msg.roll = self.action_values["roll"]
-        msg.yaw = self.action_values["yaw"]
-        msg.v_z = self.action_values["v_z"]
+        msg.vx = self.action_values["vx"]
+        msg.vy = self.action_values["vy"]
+        msg.vz = self.action_values["vz"]
+        msg.yaw_rate = self.action_values["yaw_rate"]
 
         self.publisher.publish(msg)
 
     def get_action(self):
-        """
-        Return current action values.
-        """
+        """Return the current action values."""
 
         return deepcopy(self.action_values)

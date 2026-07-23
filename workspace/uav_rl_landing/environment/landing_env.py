@@ -1,75 +1,121 @@
-import gym
-import rospy
-import numpy as np
+"""
+Reinforcement learning environment for UAV landing on a moving platform.
 
-from copy import deepcopy
+This is an rclpy.Node, not a gym.Env: rclpy nodes need to own their executor,
+and the training loop here is a synchronous spin-between-steps loop (see
+agent/q_learning.py), not a generic Gym runner. The previous version of this
+file subclassed gym.Env and imported rospy/gazebo_msgs, neither of which
+exist in this ROS 2 / Gazebo Harmonic environment.
+"""
+import time
 
-from std_msgs.msg import Float64
-from gazebo_msgs.msg import ModelState
+import rclpy
+from rclpy.node import Node
+
+from interfaces.msg import RLObservation
 
 from environment.state_discretizer import StateDiscretizer
-from config.parameters import Parameters
+from environment.reward import RewardManager
+from environment.termination import TerminationManager
+from environment.action_manager import ActionManager
 from environment.reset_manager import ResetManager
+from config.parameters import Parameters
 
-class LandingEnv(gym.Env):
-    """
-    Reinforcement Learning Environment for UAV Landing.
-    """
 
-    def __init__(self):
+class LandingEnv(Node):
 
-        super().__init__()
+    def __init__(self, parameters: Parameters = None):
 
-        self.parameters = Parameters()
+        super().__init__("landing_env")
+
+        self.parameters = parameters or Parameters()
 
         self.discretizer = StateDiscretizer(self.parameters)
+        self.reward_manager = RewardManager(self.parameters)
+        self.termination_manager = TerminationManager(self.parameters)
+        self.action_manager = ActionManager(self, self.parameters)
+        self.reset_manager = ResetManager(self, self.parameters)
 
-        self.episode = 0
-        self.step_number = 0
+        self.running_step_time = self.parameters.rl_parameters.running_step_time
 
-        self.reward = 0
-        self.episode_reward = 0
-
-        self.reset_happened = False
-
-        self.reset_manager = ResetManager(self.parameters)
-
-        self.running_step_time = (
-            self.parameters.rl_parameters.running_step_time
+        self._latest_observation = None
+        self.create_subscription(
+            RLObservation,
+            "/rl_observation",
+            self._on_observation,
+            10,
         )
 
+        self.episode = 0
+        self.step_number_in_episode = 0
+        self.episode_reward = 0.0
+
+    def _on_observation(self, msg):
+        self._latest_observation = msg
+
+    def _spin_for(self, duration_sec: float):
+        """Spin this node's callbacks for approximately duration_sec, so
+        subscription callbacks (and service futures) are actually processed
+        while the agent "waits" for the next control period."""
+
+        end_time = time.time() + duration_sec
+        while True:
+            remaining = end_time - time.time()
+            if remaining <= 0:
+                break
+            rclpy.spin_once(self, timeout_sec=remaining)
+
+    def _spin_until_observation(self, timeout_sec: float = 5.0):
+        start = time.time()
+        while self._latest_observation is None:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if time.time() - start > timeout_sec:
+                raise TimeoutError(
+                    "No message received on /rl_observation -- "
+                    "is relative_state_node running?"
+                )
+
     def reset(self):
+        """Reset the episode and return the first discretized state."""
 
-        """
-        Reset simulation and return first observation.
-        """
+        self.reset_manager.reset_episode()
+        self.action_manager.reset()
+        self.action_manager.publish()
 
-        raise NotImplementedError
+        self._latest_observation = None
+        self._spin_until_observation()
 
-    def publish_action(self):
+        self.step_number_in_episode = 0
+        self.episode_reward = 0.0
+        self.episode += 1
 
-        """
-        Publish current action to ROS.
-        """
+        return self.discretizer.discretize(self._latest_observation)
 
-        raise NotImplementedError
+    def step(self, action: int):
+        """Apply one discrete action, advance one control period, and return
+        (state, reward, done, info)."""
 
-    def get_observation(self):
+        self.action_manager.update(action)
+        self.action_manager.publish()
 
-        """
-        Read observation from ROS.
-        """
+        self._spin_for(self.running_step_time)
 
-        raise NotImplementedError
+        observation = self._latest_observation
+        state = self.discretizer.discretize(observation)
 
-    def convert_observation(self, observation):
+        self.step_number_in_episode += 1
 
-        """
-        Normalize observation.
-        """
+        done, outcome, success = self.termination_manager.check(
+            observation, self.step_number_in_episode,
+        )
 
-        return observation
+        reward = self.reward_manager.compute_reward(
+            observation, done=done, success=success,
+        )
+        self.episode_reward += reward
+
+        info = {"outcome": outcome, "success": success}
+        return state, reward, done, info
 
     def close(self):
-
-        rospy.signal_shutdown("Environment closed.")
+        self.destroy_node()
