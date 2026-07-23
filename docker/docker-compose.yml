@@ -1,0 +1,44 @@
+services:
+  fyp-uav:
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+
+    container_name: fyp-uav
+
+    stdin_open: true
+    tty: true
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.docker.xauth
+      - LIBGL_ALWAYS_INDIRECT=0
+
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    volumes:
+      - ../workspace:/workspace
+      - ../gazebo:/gazebo
+      - ../datasets:/datasets
+      - ../docs:/docs
+       # X11
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+      # Xauthority
+      - ${XAUTHORITY}:/tmp/.docker.xauth:ro
+
+    devices:
+      # AMD / Intel GPU rendering
+      - /dev/dri:/dev/dri
+
+    working_dir: /workspace
+
+    restart: unless-stopped
