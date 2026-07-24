@@ -23,9 +23,16 @@ whole time (near-zero horizontal offset + near-zero velocity + `rel_z` already b
 `minimum_altitude` reads as an instant "landing").
 
 Fixing the second bug properly needed a real takeoff phase (below) rather than a one-line patch —
-velocity-only control can't get a PX4 vehicle to a target position/altitude on its own. **This
-takeoff phase has not itself been run against live hardware yet** — it's the next thing to
-validate.
+velocity-only control can't get a PX4 vehicle to a target position/altitude on its own.
+
+**Update: the takeoff phase has since been confirmed working against live hardware too.** PX4's
+own "No connection to the GCS" arming precondition blocked the first attempt (unrelated to this
+pipeline — needs a MAVLink peer such as `pymavlink` sending heartbeats), and
+`landing_controller_node` only tried to arm once rather than retrying (fixed). Once both were
+addressed, a real run showed the UAV taking off, holding position (`position -> velocity` mode
+switch after convergence, well under `takeoff_timeout`), and then genuinely flying and descending
+during the RL-controlled phase, ending in `crash_landing` as expected for `epsilon=1.0` (pure
+random exploration, before the Q-table has learned anything).
 
 ## Takeoff / reset phase
 
@@ -71,27 +78,46 @@ continuously running simulation rather than a fully reset one.
   speed, and only once the UAV has actually been airborne past `airborne_altitude_threshold` this
   episode (guards against the false-"success"-on-the-ground bug above) — there's no Gazebo
   contact-sensor plugin bridged into ROS 2 yet.
-- **`moving_platform_node` is still a stub** (always publishes a stationary platform at the
-  origin) — that's the other repo priority you deprioritized this round. Training will "work" but
-  against a fixed target until that's implemented.
+- **The moving platform now actually moves** (circular trajectory, see
+  [`moving_platform`'s README](../ros2_ws/src/moving_platform/README.md) for the required
+  one-time spawn + bridge setup). It's driven open-loop (`VelocityControl`, no pose feedback), so
+  it can drift slightly from the analytic `PlatformState` ground truth over a long run —
+  uncorrected for now. `reset_manager.generate_initial_pose()` samples the UAV's start position
+  relative to wherever the platform *currently* is, but the position-hold takeoff phase still
+  targets a single fixed point sampled once at the start of the episode, so by the time the
+  RL-controlled phase begins (several seconds later) the platform will have moved on from there —
+  see the caveat in `reset_manager.reset_platform()`'s docstring.
+- **`reward.py`'s weights are tuned for the paper's normalized `[-1,1]` observations but applied
+  here to raw meters/m·s⁻¹** (never rewritten, only the field names were fixed) — expect
+  `episode_reward` in the thousands, not a small bounded number. Not broken, just unnormalized;
+  worth revisiting if the scale becomes a problem once you're looking at learning curves.
 
 ## Running
 
 ```bash
-# terminal 1: your Gazebo + PX4 SITL + Micro-XRCE-DDS-Agent launch, plus
+# Gazebo + PX4 SITL + Micro-XRCE-DDS-Agent + a MAVLink GCS peer (e.g. pymavlink -- see git
+# history/PR discussion; PX4 won't arm without one) already running, then:
+
 colcon build --packages-select interfaces px4_bridge relative_state moving_platform landing_controller
 source install/setup.bash
-ros2 run px4_bridge uav_state_node              # UAVState from PX4 topics
-ros2 run moving_platform moving_platform_node  # PlatformState (stub)
+
+# one-time per Gazebo session -- spawn the platform model and bridge its velocity command;
+# see moving_platform/README.md for the exact commands and why the spawn position matters
+ros2 run ros_gz_sim create -world default -file $(ros2 pkg prefix moving_platform)/share/moving_platform/models/moving_platform/model.sdf -name moving_platform -x 1.5 -y 0 -z 0.025
+ros2 run ros_gz_bridge parameter_bridge /model/moving_platform/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist
+
+# one terminal each:
+ros2 run px4_bridge uav_state_node             # UAVState from PX4 topics
+ros2 run moving_platform moving_platform_node  # PlatformState + drives the real Gazebo model
 ros2 run relative_state relative_state_node    # RLObservation
 ros2 run landing_controller landing_controller_node
 
-# terminal 2, from workspace/uav_rl_landing (with the same ROS 2 workspace sourced):
+# from workspace/uav_rl_landing (with the same ROS 2 workspace sourced):
 python3 -m agent.q_learning
 ```
 
-Sanity checks before trusting a training run: `ros2 topic echo /uav/state --once` and
-`ros2 topic echo /rl_observation --once` should both show live, changing data; watch the first
-episode or two of `q_learning.py`'s log output and confirm `outcome` looks plausible (a UAV that
-climbs out to `init_altitude` and only then descends toward the platform, not an instant
-`success`/`timeout` on step 1).
+Sanity checks before trusting a training run: `ros2 topic echo /uav/state`,
+`ros2 topic echo /platform/state`, and `ros2 topic echo /rl_observation` should all show live,
+changing data (`/platform/state` should show `x`/`y` actually varying, not stuck at a constant);
+watch the Gazebo GUI to confirm the platform is visibly moving in a circle and the UAV climbs out
+before descending toward it, not an instant `success`/`timeout`/`crash_landing` on step 1.

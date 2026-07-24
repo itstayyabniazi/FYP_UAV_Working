@@ -118,6 +118,42 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------
+# ros_gz built from source against Harmonic
+# ------------------------------------------------------
+# ros-humble-ros-gz-bridge / ros-humble-ros-gz-sim above come from ROS's own
+# apt repo, which builds them against Humble's DEFAULT paired Gazebo release
+# (Fortress -- libignition-transport11), not the Harmonic (gz-transport13)
+# installed above from OSRF's repo. The two can't talk to each other at all:
+# ros2 run ros_gz_sim create hangs/times out, and a cmd_vel bridge silently
+# drops every message (confirmed via `ldd .../parameter_bridge | grep
+# transport` showing libignition-transport11 while `gz sim --versions`
+# reports 8.14.0/Harmonic). Built in /opt rather than /workspace since
+# docker-compose bind-mounts ../workspace over /workspace at runtime --
+# anything built there during the image build would be invisible.
+ENV GZ_VERSION=harmonic
+# Keep the build to a single job: colcon/gcc can OOM in a constrained
+# container otherwise (ros_gz is template-heavy C++). Increase this if your
+# build machine has more RAM/cores available.
+ENV MAKEFLAGS="-j 1"
+
+RUN mkdir -p /opt/ros_gz_harmonic_ws/src && \
+    cd /opt/ros_gz_harmonic_ws/src && \
+    git clone https://github.com/gazebosim/ros_gz.git -b humble
+
+RUN . /opt/ros/humble/setup.bash && \
+    rosdep init && \
+    rosdep update && \
+    apt-get update && \
+    rosdep install -r --from-paths /opt/ros_gz_harmonic_ws/src -i -y --rosdistro humble && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN . /opt/ros/humble/setup.bash && \
+    cd /opt/ros_gz_harmonic_ws && \
+    colcon build --packages-up-to ros_gz_bridge ros_gz_sim --parallel-workers 1
+
+RUN chown -R ${UID}:${GID} /opt/ros_gz_harmonic_ws
+
+# ------------------------------------------------------
 # Workspace
 # ------------------------------------------------------
 WORKDIR /workspace
@@ -127,6 +163,7 @@ USER ${USERNAME}
 ENV USER=${USERNAME}
 ENV HOME=/home/${USERNAME}
 
-RUN echo "source /opt/ros/humble/setup.bash" >> /home/${USERNAME}/.bashrc
+RUN echo "source /opt/ros/humble/setup.bash" >> /home/${USERNAME}/.bashrc && \
+    echo "source /opt/ros_gz_harmonic_ws/install/setup.bash" >> /home/${USERNAME}/.bashrc
 
 CMD ["/bin/bash"]

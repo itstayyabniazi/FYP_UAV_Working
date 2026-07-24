@@ -10,6 +10,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/models/moving_platform', [
+            'models/moving_platform/model.sdf',
+            'models/moving_platform/model.config',
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
