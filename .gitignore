@@ -57,3 +57,13 @@ docker/*.log
 
 tmp/
 .cache/
+
+# ======================================================
+# Downloaded / vendored tools (large binaries, third-party source checkouts)
+# ======================================================
+
+workspace/tools/
+workspace/px4/
+workspace/ros2_ws/src/ros_gz/
+*.AppImage
+squashfs-root/

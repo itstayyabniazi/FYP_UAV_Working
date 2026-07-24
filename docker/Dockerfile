@@ -140,6 +140,11 @@ RUN mkdir -p /opt/ros_gz_harmonic_ws/src && \
     cd /opt/ros_gz_harmonic_ws/src && \
     git clone https://github.com/gazebosim/ros_gz.git -b humble
 
+# RUN uses /bin/sh (dash) by default, which can't parse setup.bash's
+# bash-only substitution syntax ("Bad substitution"). Switch to bash for the
+# rest of this file -- harmless for the plain commands elsewhere too.
+SHELL ["/bin/bash", "-c"]
+
 RUN . /opt/ros/humble/setup.bash && \
     rosdep init && \
     rosdep update && \
