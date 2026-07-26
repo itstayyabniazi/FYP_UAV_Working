@@ -108,7 +108,10 @@ class LandingController(Node):
             self.get_logger().info(f"Control mode: {self.mode} -> {msg.data}")
             if msg.data == "disarm":
                 self.disarm_counter = 0
-                self.disarm()
+                # Hand the actual landing off to PX4's own AUTO.LAND, rather
+                # than us faking a touchdown under offboard velocity control
+                # (tried and unreliable -- see engage_land_mode()'s docstring).
+                self.engage_land_mode()
         self.mode = msg.data
 
     def arm(self):
@@ -165,19 +168,67 @@ class LandingController(Node):
 
         self.get_logger().info("Offboard Command Sent")
 
+    def engage_land_mode(self):
+        """
+        Switch PX4 into its own AUTO.LAND flight mode instead of us trying to
+        fake a touchdown under offboard velocity control.
+
+        Two things were tried and both failed to ever get PX4 to accept a
+        disarm: (1) holding a position setpoint at ground level just makes
+        the controller hover near the ground -- PX4's land-detector keys off
+        measured thrust/velocity actually settling from real ground contact,
+        not the commanded position, so it never fires; (2) commanding a
+        constant descent velocity under offboard control was meant to let
+        Gazebo's rigid-body contact stop the vehicle, but in practice this
+        still never converged to a state PX4 recognized as landed. AUTO.LAND
+        is PX4's own well-tested descent-to-touchdown-to-disarm sequence and
+        is what actually drives its land-detector correctly; letting it own
+        the landing instead of reimplementing it ourselves is the reliable
+        fix. control_loop() stops streaming offboard setpoints once this
+        mode is engaged (see the "disarm" branch there) so we don't fight it.
+        """
+        msg = VehicleCommand()
+        msg.timestamp = self.get_clock().now().nanoseconds // 1000
+        msg.command = VehicleCommand.VEHICLE_CMD_DO_SET_MODE
+
+        msg.param1 = 1.0  # custom mode enabled
+        msg.param2 = 4.0  # PX4_CUSTOM_MAIN_MODE_AUTO
+        msg.param3 = 6.0  # PX4_CUSTOM_SUB_MODE_AUTO_LAND
+
+        msg.target_system = 1
+        msg.target_component = 1
+
+        msg.source_system = 1
+        msg.source_component = 1
+
+        msg.from_external = True
+
+        self.command_pub.publish(msg)
+
+        self.get_logger().info("Land Command Sent")
 
     def control_loop(self):
 
-        if self.mode in ("position", "disarm") and self.takeoff_setpoint is None:
+        if self.mode == "position" and self.takeoff_setpoint is None:
             return
         if self.mode == "velocity" and self.command is None:
             return
-        # "disarm" falls through to publishing below even with no fresh
-        # setpoint of its own -- see the comment in that branch for why.
+
+        if self.mode == "disarm":
+            # PX4 is now in AUTO.LAND (engaged once on entering this mode,
+            # see control_mode_callback) and driving its own descent -- don't
+            # stream offboard setpoints here, that would fight/override it.
+            # Retry a manual disarm periodically as a fallback in case
+            # COM_DISARM_LAND auto-disarm isn't enabled in this PX4 build;
+            # harmless once PX4 has already disarmed itself.
+            self.disarm_counter += 1
+            if self.disarm_counter % 20 == 0:
+                self.disarm()
+            return
 
         offboard = OffboardControlMode()
         offboard.timestamp = self.get_clock().now().nanoseconds // 1000
-        offboard.position = self.mode in ("position", "disarm")
+        offboard.position = self.mode == "position"
         offboard.velocity = self.mode == "velocity"
         offboard.acceleration = False
         offboard.attitude = False
@@ -195,14 +246,7 @@ class LandingController(Node):
         traj.acceleration[1] = nan
         traj.acceleration[2] = nan
 
-        if self.mode in ("position", "disarm"):
-            # "disarm": PX4 refuses to disarm mid-air ("Disarming denied: not
-            # landed"), and if we ever stop streaming offboard setpoints
-            # while still armed, PX4's own offboard-timeout failsafe trips
-            # (observed: RTL + battery-drain loop). So keep holding the last
-            # commanded position -- self.takeoff_setpoint is still whatever
-            # it was for this episode, which is fine, we're not trying to fly
-            # anywhere -- until the disarm command actually lands.
+        if self.mode == "position":
             traj.position[0] = self.takeoff_setpoint.x
             traj.position[1] = self.takeoff_setpoint.y
             traj.position[2] = self.takeoff_setpoint.z
@@ -222,15 +266,6 @@ class LandingController(Node):
             traj.yawspeed = self.command.yaw_rate
 
         self.traj_pub.publish(traj)
-
-        if self.mode == "disarm":
-            # Retry periodically: PX4 rejects a disarm attempt if it doesn't
-            # yet believe the vehicle has landed (its own landed-detector, not
-            # our altitude-threshold guess, so the two can briefly disagree).
-            self.disarm_counter += 1
-            if self.disarm_counter % 20 == 0:
-                self.disarm()
-            return
 
         self.offboard_counter += 1
 

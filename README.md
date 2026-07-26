@@ -98,6 +98,15 @@ node-by-node launch sequence.
 - Along the way: fixed a duplicate ROS 2 node-name collision, a false-"success"-on-the-ground
   termination bug, several missing `package.xml` dependencies, and PX4's arm-retry logic (it
   previously only attempted to arm once, ever).
+- **The UAV actually lands, disarms, and sits still between episodes** instead of bouncing/RTL-ing
+  forever: episode-end now hands off to PX4's own `AUTO.LAND` flight mode (its real
+  descent-to-touchdown-to-disarm sequence) rather than trying to fake a landing under offboard
+  control, which is what PX4's land-detector actually needs to ever accept a disarm command.
+- **A full ArUco-marker vision pipeline** (`vision_node`): camera → marker detection → solvePnP →
+  UAV-relative pose → `/rl_observation`, as an alternative to ground truth for real/open-world
+  deployment (landing on an actual moving car, not just a Gazebo box) — see
+  `workspace/ros2_ws/src/vision_node/README.md`. Training still uses ground truth; this is the
+  demo/deployment path.
 
 ## 4. What's left to be done
 
@@ -109,9 +118,13 @@ node-by-node launch sequence.
   scope, but short of the full landing problem.
 - **No contact sensor.** Touchdown is inferred from altitude + horizontal offset + speed
   thresholds, not a real Gazebo contact event — there's no bridged contact-sensor plugin yet.
-- **`vision_node` is an empty stub.** The platform's position is currently taken as ground truth
-  from the simulator; there's no camera-based detection (`LandingTarget.msg` already exists as a
-  placeholder for this).
+- **Vision pipeline is implemented but unverified against real sensor data.** `vision_node` now has
+  a full ArUco-marker perception path (camera → `aruco_landing_target_node` → solvePnP →
+  `vision_relative_state_node` → `/rl_observation`) as a deployment/demo alternative to the
+  ground-truth training path — see `workspace/ros2_ws/src/vision_node/README.md`. RL training still
+  uses ground truth by design (that's what's actually been validated); the camera-mount frame
+  transform needs the hover-test calibration described in that README before it can be trusted, and
+  there's no "target lost" termination case yet.
 - **Reward function is unnormalized.** `reward.py`'s weights were tuned (in the reference paper)
   for observations clipped to `[-1,1]`; here they're applied to raw meters/m·s⁻¹, so
   `episode_reward` lands in the thousands rather than a small bounded number. Not broken, just

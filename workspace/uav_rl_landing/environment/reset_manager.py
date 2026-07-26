@@ -163,6 +163,16 @@ class ResetManager:
         calls this before generating the next episode's pose; it briefly
         rests (parameters.simulation_parameters.post_landing_rest_time) before
         the next start_takeoff() re-arms and re-engages offboard mode.
+
+        landing_controller's "disarm" mode commands its own constant gentle
+        descent (see DISARM_DESCENT_VZ there) rather than holding a position
+        setpoint from here -- a position hold only makes PX4 hover near the
+        ground, which never satisfies PX4's land-detector (it keys off
+        measured thrust/velocity actually settling from ground contact, not
+        the commanded position), so disarm would be refused forever. A
+        continued descent instead lets the UAV physically settle onto the
+        platform, at which point PX4 recognizes it as landed and disarm is
+        accepted.
         """
 
         mode_msg = String()

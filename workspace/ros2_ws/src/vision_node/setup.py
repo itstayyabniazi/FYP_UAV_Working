@@ -15,7 +15,11 @@ setup(
     zip_safe=True,
     maintainer='zanan',
     maintainer_email='zanan@todo.todo',
-    description='TODO: Package description',
+    description=(
+        'ArUco marker-based vision perception for the moving-platform '
+        'landing target (camera -> LandingTarget -> RLObservation), the '
+        'deployment/demo counterpart to the ground-truth training path.'
+    ),
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -24,6 +28,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'aruco_landing_target_node = vision_node.aruco_landing_target_node:main',
+            'vision_relative_state_node = vision_node.vision_relative_state_node:main',
         ],
     },
 )

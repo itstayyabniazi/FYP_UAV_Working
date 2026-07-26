@@ -184,8 +184,10 @@ class SimulationParameters(UAVParameters):
 
         # How long the UAV sits disarmed at the end of an episode (see
         # reset_manager.land_and_disarm()) before the next episode's takeoff
-        # begins.
-        self.post_landing_rest_time: float = 3.0       # [s]
+        # begins. Needs to comfortably cover physically settling onto the
+        # platform (continued-descent contact, not a teleport) plus PX4's own
+        # land-detector debounce before it will accept a disarm command.
+        self.post_landing_rest_time: float = 5.0       # [s]
 
 
 class Parameters:
