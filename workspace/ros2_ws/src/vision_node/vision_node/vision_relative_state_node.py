@@ -15,6 +15,15 @@ car" scenario. moving_platform_node still needs to run either way in sim, to
 actually drive the platform's physical motion -- only its ground-truth
 PlatformState publication goes unused on this path.
 
+Target-lost handling: this node ALWAYS publishes an observation once the
+marker has been detected at least once (never goes silent), using the last
+known relative pose while the marker is out of view, but sets
+RLObservation.detected accordingly. termination.py's target-lost watchdog is
+the actual consumer of that flag -- it decides how long a loss is tolerated
+before ending the episode/flight as "target_lost". This node's own job is
+just to report ground truth about what it currently sees, honestly, not to
+decide policy about how long is too long.
+
 platform_vx/vy/vz and roll/pitch/yaw semantics: see RLObservation.msg and
 relative_state_node.py -- reproduced here to match, with platform velocity
 derived as uav.velocity + relative_velocity (since relative_velocity =
@@ -30,26 +39,22 @@ from rclpy.node import Node
 from interfaces.msg import UAVState, LandingTarget, RLObservation
 
 
-# How long to keep publishing the last known relative pose after the marker
-# is reported lost (LandingTarget.detected=False) before treating it as
-# fully stale. See the module docstring's note on target-lost handling being
-# a known limitation of this first version -- there's no "target lost"
-# termination case wired up yet, so this just avoids the observation
-# free-falling to (0,0,0) the instant a single frame misses.
-STALE_TARGET_TIMEOUT_SEC = 1.0
-
-
 class VisionRelativeStateNode(Node):
 
     def __init__(self):
         super().__init__("vision_relative_state_node")
 
         self.uav = None
-        self.target = None
-        self._target_stamp = None
 
-        self._prev_rel = None  # (t, rel_x, rel_y, rel_z) of the last DETECTED target
-        self._last_rel_vel = (0.0, 0.0, 0.0)  # last computed (rel_vx, rel_vy, rel_vz)
+        # Last known good relative pose -- updated only on an actual
+        # detection, so a "not detected" LandingTarget (which zeroes its own
+        # relative_x/y/z, see aruco_landing_target_node's
+        # _publish_not_detected) never overwrites this with a misleading 0.
+        self._last_known_rel = None  # (rel_x, rel_y, rel_z, rel_yaw)
+        self._last_rel_vel = (0.0, 0.0, 0.0)
+
+        self._detected = False
+        self._prev_detection = None  # (t, rel_x, rel_y, rel_z) of the last DETECTED reading
 
         self.create_subscription(UAVState, "/uav/state", self.uav_callback, 10)
         self.create_subscription(LandingTarget, "/landing_target", self.target_callback, 10)
@@ -64,45 +69,32 @@ class VisionRelativeStateNode(Node):
         self.uav = msg
 
     def target_callback(self, msg):
-        self.target = msg
-        self._target_stamp = self.get_clock().now().nanoseconds / 1e9
+        self._detected = msg.detected
 
-    def publish_observation(self):
-        if self.uav is None or self.target is None:
-            return
+        if not msg.detected:
+            return  # keep whatever _last_known_rel/_last_rel_vel already holds
 
         now = self.get_clock().now().nanoseconds / 1e9
+        rel_x, rel_y, rel_z = msg.relative_x, msg.relative_y, msg.relative_z
 
-        if not self.target.detected:
-            if self._target_stamp is None or (now - self._target_stamp) > STALE_TARGET_TIMEOUT_SEC:
-                # No usable pose at all yet / for too long -- nothing to publish.
-                return
-            # else: within the grace window, keep publishing the last
-            # message's (frozen) relative pose below.
+        if self._prev_detection is not None:
+            prev_t, prev_x, prev_y, prev_z = self._prev_detection
+            dt = now - prev_t
+            if dt > 1e-3:
+                self._last_rel_vel = (
+                    (rel_x - prev_x) / dt,
+                    (rel_y - prev_y) / dt,
+                    (rel_z - prev_z) / dt,
+                )
+        self._prev_detection = (now, rel_x, rel_y, rel_z)
+        self._last_known_rel = (rel_x, rel_y, rel_z, msg.relative_yaw)
 
-        rel_x = self.target.relative_x
-        rel_y = self.target.relative_y
-        rel_z = self.target.relative_z
-        rel_yaw = self.target.relative_yaw
+    def publish_observation(self):
+        if self.uav is None or self._last_known_rel is None:
+            return  # no attitude yet, or the marker has never been seen at all
 
-        if self.target.detected:
-            if self._prev_rel is not None:
-                prev_t, prev_x, prev_y, prev_z = self._prev_rel
-                dt = now - prev_t
-                if dt > 1e-3:
-                    rel_vx = (rel_x - prev_x) / dt
-                    rel_vy = (rel_y - prev_y) / dt
-                    rel_vz = (rel_z - prev_z) / dt
-                else:
-                    rel_vx, rel_vy, rel_vz = self._last_rel_vel
-            else:
-                rel_vx, rel_vy, rel_vz = self._last_rel_vel
-            self._prev_rel = (now, rel_x, rel_y, rel_z)
-            self._last_rel_vel = (rel_vx, rel_vy, rel_vz)
-        else:
-            # Marker currently not detected (grace window) -- hold the last
-            # computed relative velocity rather than snapping to zero.
-            rel_vx, rel_vy, rel_vz = self._last_rel_vel
+        rel_x, rel_y, rel_z, rel_yaw = self._last_known_rel
+        rel_vx, rel_vy, rel_vz = self._last_rel_vel
 
         obs = RLObservation()
 
@@ -125,6 +117,8 @@ class VisionRelativeStateNode(Node):
         obs.platform_vz = self.uav.vz + rel_vz
 
         obs.distance = math.sqrt(rel_x ** 2 + rel_y ** 2 + rel_z ** 2)
+
+        obs.detected = self._detected
 
         self.publisher.publish(obs)
 

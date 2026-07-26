@@ -117,15 +117,21 @@ If X/Y come out swapped or sign-flipped, that's `CAMERA_TO_BODY` (or the
 marker's assumed mounting orientation in the patched sensor `<pose>`)
 needing a one-line fix -- not a bug in the attitude-rotation math itself.
 
+## Target-lost handling
+
+`vision_relative_state_node` always publishes `/rl_observation` once the
+marker has been seen at least once -- it never goes silent -- but sets
+`RLObservation.detected = false` while the marker is out of view, holding
+the last known relative pose rather than snapping to (0,0,0).
+`termination.py`'s watchdog (`simulation_parameters.target_lost_timeout`,
+default 5s) ends the episode/flight as outcome `"target_lost"` once the loss
+persists that long, the same watchdog pattern the reference
+"Vision-based-UAV-autonomous-landing" repo uses (its `Main.py`: 10s of no
+helipad detection before falling back). This is a no-op on the ground-truth
+training path -- `relative_state_node` always sets `detected = true`.
+
 ## Known limitations
 
-- **No target-lost termination case.** If the marker leaves the camera's
-  view for longer than `STALE_TARGET_TIMEOUT_SEC` (1s), the observation
-  simply stops updating rather than the episode/flight explicitly handling
-  a "lost target" state. Fine for a first version where the marker is
-  expected to stay in frame; revisit if that turns out not to hold in
-  practice (e.g. add a `target_lost` outcome to `termination.py`, gated on a
-  `detected` flag threaded through `RLObservation`).
 - **No filtering.** Relative velocity is raw finite-difference between
   consecutive detections -- noisier than the ground-truth path's analytic
   velocity. A Kalman/complementary filter would help if this turns out to

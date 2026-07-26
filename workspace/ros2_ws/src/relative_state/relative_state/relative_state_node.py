@@ -95,6 +95,12 @@ class RelativeStateNode(Node):
             obs.rel_z**2
         )
 
+        # Ground truth is always "detected" by definition -- only the vision
+        # path (vision_relative_state_node) ever reports this false, when the
+        # ArUco marker drops out of view. See termination.py's target-lost
+        # watchdog, the only consumer that branches on this field.
+        obs.detected = True
+
         self.publisher.publish(obs)
 
 

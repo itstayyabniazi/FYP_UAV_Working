@@ -120,11 +120,11 @@ node-by-node launch sequence.
   thresholds, not a real Gazebo contact event — there's no bridged contact-sensor plugin yet.
 - **Vision pipeline is implemented but unverified against real sensor data.** `vision_node` now has
   a full ArUco-marker perception path (camera → `aruco_landing_target_node` → solvePnP →
-  `vision_relative_state_node` → `/rl_observation`) as a deployment/demo alternative to the
+  `vision_relative_state_node` → `/rl_observation`), including a target-lost watchdog
+  (`termination.py`'s `"target_lost"` outcome), as a deployment/demo alternative to the
   ground-truth training path — see `workspace/ros2_ws/src/vision_node/README.md`. RL training still
   uses ground truth by design (that's what's actually been validated); the camera-mount frame
-  transform needs the hover-test calibration described in that README before it can be trusted, and
-  there's no "target lost" termination case yet.
+  transform needs the hover-test calibration described in that README before it can be trusted.
 - **Reward function is unnormalized.** `reward.py`'s weights were tuned (in the reference paper)
   for observations clipped to `[-1,1]`; here they're applied to raw meters/m·s⁻¹, so
   `episode_reward` lands in the thousands rather than a small bounded number. Not broken, just
