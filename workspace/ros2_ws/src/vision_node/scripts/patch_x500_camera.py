@@ -11,18 +11,20 @@ existing checkout directly, idempotently (safe to re-run) and with a backup.
 
 Usage (inside the Docker container, wherever PX4-Autopilot was cloned):
 
-    python3 patch_x500_camera.py [path/to/PX4-Autopilot/Tools/simulation/gz/models/x500/model.sdf]
+    python3 patch_x500_camera.py [path/to/model.sdf] [--link LINK_NAME]
 
-With no argument, it searches the default PX4-Autopilot layout under
+With no path argument, it searches the default PX4-Autopilot layout under
 $HOME and /workspace for Tools/simulation/gz/models/x500/model.sdf.
+--link defaults to "base_link"; pass a different one if your PX4 version
+names it something else (see the error message below for how to check).
 
 What it does: inserts a <sensor type="camera"> block, pointed straight down
 (pose pitch=+90deg -- the standard convention for a downward-mounted camera
 in PX4/Gazebo, e.g. the optical-flow/precision-landing camera examples),
-into <link name="base_link"> right before its closing </link> tag. Since SDF
-links can't contain a nested <link>, the first "</link>" found after
-"<link name=\"base_link\">" unambiguously closes it -- no full XML parser
-needed, and the rest of the file's formatting/comments are left untouched.
+into the target <link> right before its closing </link> tag. Since SDF links
+can't contain a nested <link>, the first "</link>" found after the opening
+tag unambiguously closes it -- no full XML parser needed, and the rest of
+the file's formatting/comments are left untouched.
 
 After running this, the world's SDF also needs the Sensors system plugin
 loaded for the camera to actually render/publish anything -- PX4's default
@@ -37,10 +39,12 @@ errors, check the world file for:
 See vision_node/README.md for the full setup (marker generation, this patch,
 the ros_gz_bridge camera bridge commands, and how to run the node).
 """
-import sys
+import argparse
+import re
 from pathlib import Path
 
 SENSOR_NAME = "downward_camera"
+DEFAULT_LINK = "base_link"
 
 CAMERA_SENSOR_SDF = f"""      <sensor name="{SENSOR_NAME}" type="camera">
         <!-- pitch = +pi/2: rotates the sensor's forward look direction from
@@ -74,17 +78,31 @@ DEFAULT_SEARCH_ROOTS = [
 RELATIVE_MODEL_PATH = Path("PX4-Autopilot/Tools/simulation/gz/models/x500/model.sdf")
 
 
+def _is_file_safe(path: Path) -> bool:
+    """Path.is_file() raises PermissionError (rather than returning False)
+    when an ancestor directory isn't readable by the current user -- e.g.
+    /root/PX4-Autopilot when running as a non-root user with /root cloned
+    for someone else. Treat "can't even tell" the same as "not found"."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def find_model_sdf() -> Path:
     for root in DEFAULT_SEARCH_ROOTS:
         candidate = root / RELATIVE_MODEL_PATH
-        if candidate.is_file():
+        if _is_file_safe(candidate):
             return candidate
     # Fall back to a recursive search, in case PX4-Autopilot was cloned
     # somewhere non-standard.
     for root in DEFAULT_SEARCH_ROOTS:
-        if not root.is_dir():
-            continue
-        matches = list(root.rglob("Tools/simulation/gz/models/x500/model.sdf"))
+        try:
+            if not root.is_dir():
+                continue
+            matches = list(root.rglob("Tools/simulation/gz/models/x500/model.sdf"))
+        except OSError:
+            continue  # e.g. permission denied partway through the walk
         if matches:
             return matches[0]
     raise FileNotFoundError(
@@ -94,25 +112,42 @@ def find_model_sdf() -> Path:
     )
 
 
-def patch(model_sdf_path: Path):
+def find_link_anchor(text: str, link_name: str):
+    """Returns (anchor_start, anchor_end) for the opening `<link name=...>`
+    tag, tolerant of single vs double quotes and extra whitespace -- SDF
+    files across PX4 versions aren't all formatted identically."""
+
+    pattern = re.compile(
+        r'<link\s+name\s*=\s*[\'"]' + re.escape(link_name) + r'[\'"]\s*>'
+    )
+    match = pattern.search(text)
+    if match is None:
+        return None
+    return match.start(), match.end()
+
+
+def patch(model_sdf_path: Path, link_name: str):
     text = model_sdf_path.read_text()
 
     if SENSOR_NAME in text:
         print(f"'{SENSOR_NAME}' sensor already present in {model_sdf_path} -- nothing to do.")
         return
 
-    anchor = '<link name="base_link">'
-    anchor_index = text.find(anchor)
-    if anchor_index == -1:
+    anchor = find_link_anchor(text, link_name)
+    if anchor is None:
+        all_links = re.findall(r'<link\s+name\s*=\s*[\'"]([^\'"]+)[\'"]', text)
         raise ValueError(
-            f'Could not find `{anchor}` in {model_sdf_path} -- the x500 model '
-            "may have changed. Insert the camera sensor block manually; see "
-            "this script's CAMERA_SENSOR_SDF constant."
+            f'Could not find a `<link name="{link_name}">` (in either quote style) in '
+            f"{model_sdf_path}. Links actually present in this file: {all_links or '(none found)'}. "
+            "Re-run with `--link <name>` picking one of those (the camera should attach to "
+            "whichever link represents the vehicle's main body), or insert the sensor block "
+            "manually -- see this script's CAMERA_SENSOR_SDF constant."
         )
+    _, anchor_end = anchor
 
-    close_index = text.find("</link>", anchor_index)
+    close_index = text.find("</link>", anchor_end)
     if close_index == -1:
-        raise ValueError(f"Found `{anchor}` but no matching `</link>` in {model_sdf_path}.")
+        raise ValueError(f"Found the `{link_name}` link but no matching `</link>` in {model_sdf_path}.")
 
     backup_path = model_sdf_path.with_suffix(model_sdf_path.suffix + ".orig")
     if not backup_path.exists():
@@ -121,16 +156,24 @@ def patch(model_sdf_path: Path):
 
     patched = text[:close_index] + CAMERA_SENSOR_SDF + text[close_index:]
     model_sdf_path.write_text(patched)
-    print(f"Inserted '{SENSOR_NAME}' sensor into {model_sdf_path}")
+    print(f"Inserted '{SENSOR_NAME}' sensor into the '{link_name}' link of {model_sdf_path}")
 
 
 def main():
-    if len(sys.argv) > 1:
-        model_sdf_path = Path(sys.argv[1])
-    else:
-        model_sdf_path = find_model_sdf()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "model_sdf_path", nargs="?", default=None,
+        help="Path to the x500 model.sdf. Auto-detected under $HOME and /workspace if omitted.",
+    )
+    parser.add_argument(
+        "--link", default=DEFAULT_LINK,
+        help=f"Link to attach the camera sensor to (default: {DEFAULT_LINK}).",
+    )
+    args = parser.parse_args()
 
-    patch(model_sdf_path)
+    model_sdf_path = Path(args.model_sdf_path) if args.model_sdf_path else find_model_sdf()
+
+    patch(model_sdf_path, args.link)
 
 
 if __name__ == "__main__":

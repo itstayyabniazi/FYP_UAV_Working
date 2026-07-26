@@ -64,6 +64,15 @@ original as `model.sdf.orig` the first time. This inserts a camera sensor
 pointed straight down (publishing to the Gazebo Transport topic
 `drone_camera`), the standard PX4/Gazebo downward-camera mount convention.
 
+If it can't find a `base_link` to attach to, it prints every link name it
+actually found in the file -- re-run with `--link <name>` picking the one
+that represents the vehicle's main body (PX4 versions have named this
+differently across releases):
+
+```bash
+python3 patch_x500_camera.py --link <name from the error message>
+```
+
 If the bridged image later comes through black/empty with no errors, check
 that the PX4 SITL world file loads the Sensors system plugin (PX4's default
 worlds normally already do, since other PX4 vehicle models use cameras/depth
