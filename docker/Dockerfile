@@ -159,6 +159,28 @@ RUN . /opt/ros/humble/setup.bash && \
 RUN chown -R ${UID}:${GID} /opt/ros_gz_harmonic_ws
 
 # ------------------------------------------------------
+# Micro XRCE-DDS Agent (bridges PX4's uORB/DDS topics onto ROS 2)
+# ------------------------------------------------------
+# Micro-XRCE-DDS-Agent v2.4.2's own CMakeLists.txt auto-fetches Fast-DDS via
+# a hardcoded git branch reference ("2.12.x") that no longer exists on
+# eProsima's Fast-DDS repo (only tagged releases like v2.12.2 do) -- a stock
+# build fails with "invalid reference: 2.12.x". Patch it to an existing tag
+# before building. This produces Fast-RTPS 2.12.2 (a 2.x release, wire
+# compatible with ROS Humble's own Fast-RTPS 2.6.11), unlike main/v3.0.1's
+# CMakeLists, which unconditionally targets the incompatible Fast-DDS 3.x
+# line regardless of any "use system" option -- confirmed by both actually
+# arming/flying against a live PX4 instance, not just linking cleanly.
+RUN git clone -b v2.4.2 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git /opt/Micro-XRCE-DDS-Agent && \
+    sed -i 's/set(_fastdds_tag 2.12.x)/set(_fastdds_tag v2.12.2)/' /opt/Micro-XRCE-DDS-Agent/CMakeLists.txt
+
+RUN mkdir -p /opt/Micro-XRCE-DDS-Agent/build && \
+    cd /opt/Micro-XRCE-DDS-Agent/build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig
+
+# ------------------------------------------------------
 # Workspace
 # ------------------------------------------------------
 WORKDIR /workspace

@@ -182,6 +182,11 @@ class SimulationParameters(UAVParameters):
         self.takeoff_velocity_tolerance: float = 0.3   # [m/s]
         self.takeoff_timeout: float = 15.0             # [s]
 
+        # How long the UAV sits disarmed at the end of an episode (see
+        # reset_manager.land_and_disarm()) before the next episode's takeoff
+        # begins.
+        self.post_landing_rest_time: float = 3.0       # [s]
+
 
 class Parameters:
     def __init__(self):

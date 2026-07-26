@@ -49,6 +49,12 @@ class LandingEnv(Node):
         self.episode = 0
         self.step_number_in_episode = 0
         self.episode_reward = 0.0
+        # Only "success"/"crash_landing" come from termination.py's near-ground
+        # (minimum_altitude) branch -- "out_of_bounds"/"timeout" can end an
+        # episode with the UAV still mid-air, and PX4 correctly refuses to
+        # disarm something it doesn't believe has landed. reset() only
+        # attempts a disarm when this says it's safe to.
+        self._last_outcome = None
 
     def _on_observation(self, msg):
         self._latest_observation = msg
@@ -82,6 +88,15 @@ class LandingEnv(Node):
         hit, then hand control to the RL agent's velocity commands and return
         the first discretized state.
         """
+
+        if self._last_outcome in ("success", "crash_landing"):
+            # Only disarm when the previous episode actually ended near the
+            # ground -- attempting it after "out_of_bounds"/"timeout" (UAV
+            # potentially still mid-air) gets rejected by PX4 ("Disarming
+            # denied: not landed"), and that's fine: those cases fly straight
+            # into the next takeoff the same way they always safely did.
+            self.reset_manager.land_and_disarm()
+            self._spin_for(self.parameters.simulation_parameters.post_landing_rest_time)
 
         pose = self.reset_manager.generate_initial_pose()
         self.reset_manager.start_takeoff(pose)
@@ -137,6 +152,9 @@ class LandingEnv(Node):
             observation, done=done, success=success,
         )
         self.episode_reward += reward
+
+        if done:
+            self._last_outcome = outcome
 
         info = {"outcome": outcome, "success": success}
         return state, reward, done, info

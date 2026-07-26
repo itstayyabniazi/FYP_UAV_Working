@@ -25,7 +25,11 @@ class LandingController(Node):
 
         # "position" during the reset/takeoff phase (uav_rl_landing/environment/
         # reset_manager.py flies to + holds a TakeoffSetpoint), "velocity" once
-        # the RL agent's LandingCommand takes over for the episode itself.
+        # the RL agent's LandingCommand takes over for the episode itself, and
+        # "disarm" briefly at the end of each episode -- see reset_manager.py's
+        # land_and_disarm(). Without this, reset() used to fly straight from
+        # wherever the previous episode ended (often still resting on/near the
+        # platform) to the next episode's takeoff target while still armed.
         self.mode = "position"
 
         # Latest setpoint for each mode. Both start out None -- control_loop()
@@ -35,6 +39,7 @@ class LandingController(Node):
         self.command = None
 
         self.offboard_counter = 0
+        self.disarm_counter = 0
 
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -96,11 +101,14 @@ class LandingController(Node):
         self.takeoff_setpoint = msg
 
     def control_mode_callback(self, msg):
-        if msg.data not in ("position", "velocity"):
+        if msg.data not in ("position", "velocity", "disarm"):
             self.get_logger().warn(f"Ignoring unknown control mode: {msg.data!r}")
             return
         if msg.data != self.mode:
             self.get_logger().info(f"Control mode: {self.mode} -> {msg.data}")
+            if msg.data == "disarm":
+                self.disarm_counter = 0
+                self.disarm()
         self.mode = msg.data
 
     def arm(self):
@@ -119,6 +127,23 @@ class LandingController(Node):
         self.command_pub.publish(msg)
 
         self.get_logger().info("Arm Command Sent")
+
+    def disarm(self):
+        msg = VehicleCommand()
+        msg.timestamp = self.get_clock().now().nanoseconds // 1000
+        msg.command = VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM
+        msg.param1 = 0.0
+
+        msg.target_system = 1
+        msg.target_component = 1
+        msg.source_system = 1
+        msg.source_component = 1
+
+        msg.from_external = True
+
+        self.command_pub.publish(msg)
+
+        self.get_logger().info("Disarm Command Sent")
 
     def engage_offboard_mode(self):
         msg = VehicleCommand()
@@ -143,16 +168,16 @@ class LandingController(Node):
 
     def control_loop(self):
 
-        if self.mode == "position" and self.takeoff_setpoint is None:
+        if self.mode in ("position", "disarm") and self.takeoff_setpoint is None:
             return
         if self.mode == "velocity" and self.command is None:
             return
-
-        self.offboard_counter += 1
+        # "disarm" falls through to publishing below even with no fresh
+        # setpoint of its own -- see the comment in that branch for why.
 
         offboard = OffboardControlMode()
         offboard.timestamp = self.get_clock().now().nanoseconds // 1000
-        offboard.position = self.mode == "position"
+        offboard.position = self.mode in ("position", "disarm")
         offboard.velocity = self.mode == "velocity"
         offboard.acceleration = False
         offboard.attitude = False
@@ -170,7 +195,14 @@ class LandingController(Node):
         traj.acceleration[1] = nan
         traj.acceleration[2] = nan
 
-        if self.mode == "position":
+        if self.mode in ("position", "disarm"):
+            # "disarm": PX4 refuses to disarm mid-air ("Disarming denied: not
+            # landed"), and if we ever stop streaming offboard setpoints
+            # while still armed, PX4's own offboard-timeout failsafe trips
+            # (observed: RTL + battery-drain loop). So keep holding the last
+            # commanded position -- self.takeoff_setpoint is still whatever
+            # it was for this episode, which is fine, we're not trying to fly
+            # anywhere -- until the disarm command actually lands.
             traj.position[0] = self.takeoff_setpoint.x
             traj.position[1] = self.takeoff_setpoint.y
             traj.position[2] = self.takeoff_setpoint.z
@@ -190,6 +222,17 @@ class LandingController(Node):
             traj.yawspeed = self.command.yaw_rate
 
         self.traj_pub.publish(traj)
+
+        if self.mode == "disarm":
+            # Retry periodically: PX4 rejects a disarm attempt if it doesn't
+            # yet believe the vehicle has landed (its own landed-detector, not
+            # our altitude-threshold guess, so the two can briefly disagree).
+            self.disarm_counter += 1
+            if self.disarm_counter % 20 == 0:
+                self.disarm()
+            return
+
+        self.offboard_counter += 1
 
         # Retry periodically rather than once: PX4 can reject the first arm
         # attempt (e.g. "No connection to the GCS" until QGroundControl/a
