@@ -9,12 +9,30 @@ multi-GB vendored build tree, same reasoning as workspace/tools/). So instead
 of maintaining a forked copy of PX4's model here, this script patches your
 existing checkout directly, idempotently (safe to re-run) and with a backup.
 
+IMPORTANT: as of at least PX4 v1.14+, Tools/simulation/gz/models/x500/model.sdf
+is just a thin wrapper --
+
+    <model name='x500'>
+      <include merge='true'>
+        <uri>model://x500_base</uri>
+      </include>
+      <plugin ...MulticopterMotorModel.../>
+      ...
+    </model>
+
+-- with `merge='true'` inlining the ACTUAL airframe (links, sensors,
+geometry, including `base_link`) from the sibling model x500_base
+(Tools/simulation/gz/models/x500_base/model.sdf). Patching x500/model.sdf
+itself will never find a `<link>` to attach to -- this script targets
+x500_base/model.sdf by default; the merge means a sensor added there ends
+up part of the final x500 model exactly as if it had been written inline.
+
 Usage (inside the Docker container, wherever PX4-Autopilot was cloned):
 
     python3 patch_x500_camera.py [path/to/model.sdf] [--link LINK_NAME]
 
 With no path argument, it searches the default PX4-Autopilot layout under
-$HOME and /workspace for Tools/simulation/gz/models/x500/model.sdf.
+$HOME and /workspace for Tools/simulation/gz/models/x500_base/model.sdf.
 --link defaults to "base_link"; pass a different one if your PX4 version
 names it something else (see the error message below for how to check).
 
@@ -75,7 +93,7 @@ DEFAULT_SEARCH_ROOTS = [
     Path("/workspace"),
     Path("/root"),
 ]
-RELATIVE_MODEL_PATH = Path("PX4-Autopilot/Tools/simulation/gz/models/x500/model.sdf")
+RELATIVE_MODEL_PATH = Path("PX4-Autopilot/Tools/simulation/gz/models/x500_base/model.sdf")
 
 
 def _is_file_safe(path: Path) -> bool:
@@ -100,15 +118,15 @@ def find_model_sdf() -> Path:
         try:
             if not root.is_dir():
                 continue
-            matches = list(root.rglob("Tools/simulation/gz/models/x500/model.sdf"))
+            matches = list(root.rglob("Tools/simulation/gz/models/x500_base/model.sdf"))
         except OSError:
             continue  # e.g. permission denied partway through the walk
         if matches:
             return matches[0]
     raise FileNotFoundError(
-        "Could not find PX4-Autopilot's x500/model.sdf automatically. "
+        "Could not find PX4-Autopilot's x500_base/model.sdf automatically. "
         "Pass the path explicitly: "
-        "python3 patch_x500_camera.py /path/to/PX4-Autopilot/Tools/simulation/gz/models/x500/model.sdf"
+        "python3 patch_x500_camera.py /path/to/PX4-Autopilot/Tools/simulation/gz/models/x500_base/model.sdf"
     )
 
 

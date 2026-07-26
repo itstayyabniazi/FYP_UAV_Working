@@ -45,7 +45,11 @@ either).
 
 The x500 model lives inside your PX4-Autopilot checkout, not in this repo
 (same reason `workspace/px4/` is gitignored -- it's a multi-GB vendored
-tree). Patch it directly:
+tree). Patch it directly. Note this patches `x500_base/model.sdf`, not
+`x500/model.sdf` -- the latter is just a thin wrapper
+(`<include merge='true'><uri>model://x500_base</uri></include>`) around the
+former, which is where the actual airframe (`base_link` and everything else)
+lives (confirmed against a real PX4 v1.14+ checkout):
 
 ```bash
 cd /workspace/ros2_ws/src/vision_node/scripts
@@ -56,7 +60,7 @@ With no argument it searches the standard PX4-Autopilot layout under `$HOME`
 and `/workspace`; pass the path explicitly if it can't find it:
 
 ```bash
-python3 patch_x500_camera.py /path/to/PX4-Autopilot/Tools/simulation/gz/models/x500/model.sdf
+python3 patch_x500_camera.py /path/to/PX4-Autopilot/Tools/simulation/gz/models/x500_base/model.sdf
 ```
 
 Safe to re-run (checks for the sensor by name first) and backs up the
