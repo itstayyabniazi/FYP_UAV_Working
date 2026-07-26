@@ -3,9 +3,21 @@
 <package format="3">
   <name>vision_node</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>
+    ArUco marker-based vision perception for the moving-platform landing
+    target: aruco_landing_target_node (camera -> LandingTarget) and
+    vision_relative_state_node (LandingTarget -> RLObservation), the
+    deployment/demo counterpart to the relative_state package's
+    ground-truth-based training path. Needs opencv-contrib-python (for
+    cv2.aruco) installed via pip -- see docker/Dockerfile -- since it isn't
+    a rosdep-resolvable package.
+  </description>
   <maintainer email="zanan@todo.todo">zanan</maintainer>
   <license>TODO: License declaration</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -181,6 +181,15 @@ RUN mkdir -p /opt/Micro-XRCE-DDS-Agent/build && \
     ldconfig
 
 # ------------------------------------------------------
+# OpenCV (ArUco marker detection for vision_node)
+# ------------------------------------------------------
+# opencv-contrib-python (not the base opencv-python) specifically because
+# cv2.aruco lived in opencv-contrib for the OpenCV version Ubuntu 22.04's own
+# apt package (python3-opencv) ships; pip's contrib build is the reliable way
+# to get cv2.aruco regardless of exactly which OpenCV version resolves.
+RUN pip3 install --no-cache-dir opencv-contrib-python numpy
+
+# ------------------------------------------------------
 # Workspace
 # ------------------------------------------------------
 WORKDIR /workspace
