@@ -23,7 +23,17 @@ requires rel_z to have exceeded airborne_altitude_threshold at least once
 during the episode before the minimum_altitude/touchdown branch is allowed to
 fire at all; until then, an episode that stays on the ground just runs to
 "timeout" instead of a bogus "success".
+
+TARGET-LOST WATCHDOG: on the vision path (vision_relative_state_node),
+RLObservation.detected can go false when the ArUco marker leaves the
+camera's view; the same pattern the reference "Vision-based-UAV-autonomous-
+landing" repo uses (its Main.py: 10s of no helipad detection before falling
+back). observation.detected is always true on the ground-truth training path
+(relative_state_node sets it unconditionally), so this watchdog is a
+guaranteed no-op there -- it only ever fires for a vision-driven flight.
 """
+import time
+
 import numpy as np
 
 
@@ -37,22 +47,34 @@ class TerminationManager:
             1.0, 0.5 * parameters.simulation_parameters.init_altitude
         )
         self._max_rel_z_seen = -np.inf
+        self._lost_since = None  # time.time() the target was last seen detected
 
     def reset(self):
         """Call at the start of every episode."""
         self._max_rel_z_seen = -np.inf
+        self._lost_since = None
 
     def check(self, observation, step_number_in_episode: int):
         """
         Returns (done: bool, outcome: str, success: bool).
 
         outcome is one of:
-            "in_progress", "timeout", "out_of_bounds", "success", "crash_landing"
+            "in_progress", "timeout", "out_of_bounds", "success",
+            "crash_landing", "target_lost"
         """
         sim = self.parameters.simulation_parameters
 
         self._max_rel_z_seen = max(self._max_rel_z_seen, observation.rel_z)
         has_been_airborne = self._max_rel_z_seen >= self.airborne_altitude_threshold
+
+        if observation.detected:
+            self._lost_since = None
+        else:
+            now = time.time()
+            if self._lost_since is None:
+                self._lost_since = now
+            elif (now - self._lost_since) >= sim.target_lost_timeout:
+                return True, "target_lost", False
 
         if step_number_in_episode >= self.parameters.rl_parameters.max_num_timesteps_episode:
             return True, "timeout", False

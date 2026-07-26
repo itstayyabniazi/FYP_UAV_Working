@@ -151,6 +151,16 @@ class SimulationParameters(UAVParameters):
         # purely from rel_z crossing this threshold, not a real contact event.
         self.minimum_altitude: float = 0.3  # [m]
 
+        # How long (wall-clock) RLObservation.detected can stay false before
+        # termination.py ends the episode as "target_lost" -- only relevant
+        # on the vision path (vision_relative_state_node); ground truth is
+        # always "detected", so this never fires during training. Shorter
+        # than the reference "Vision-based-UAV-autonomous-landing" repo's
+        # 10s (its multi-class YOLO+DeepSORT detector is lower-rate/noisier
+        # than a direct ArUco solvePnP read), but tune to taste for your
+        # camera's actual detection rate/reliability.
+        self.target_lost_timeout: float = 5.0  # [s]
+
         # Reward weights (paper's shaping reward, same structure)
         self.w_p: float = -100.0
         self.w_v: float = -10.0
