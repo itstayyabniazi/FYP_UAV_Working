@@ -164,24 +164,16 @@ class ResetManager:
         rests (parameters.simulation_parameters.post_landing_rest_time) before
         the next start_takeoff() re-arms and re-engages offboard mode.
 
-        Publishes a fresh TakeoffSetpoint at the UAV's actual current (x, y)
-        with z=0 (ground) BEFORE switching to "disarm" mode. Without this,
-        landing_controller's "disarm" mode holds whatever TakeoffSetpoint it
-        last received -- which, at episode end, is still that episode's
-        original takeoff target (flight altitude, e.g. init_altitude AGL),
-        not where the UAV actually is now. Commanding it to hold/climb back
-        to flight altitude while trying to disarm means PX4's landed-detector
-        never agrees the vehicle is down, and every disarm attempt gets
-        rejected ("Disarming denied: not landed") for the entire rest period.
+        landing_controller's "disarm" mode commands its own constant gentle
+        descent (see DISARM_DESCENT_VZ there) rather than holding a position
+        setpoint from here -- a position hold only makes PX4 hover near the
+        ground, which never satisfies PX4's land-detector (it keys off
+        measured thrust/velocity actually settling from ground contact, not
+        the commanded position), so disarm would be refused forever. A
+        continued descent instead lets the UAV physically settle onto the
+        platform, at which point PX4 recognizes it as landed and disarm is
+        accepted.
         """
-
-        if self._uav_state is not None:
-            setpoint = TakeoffSetpoint()
-            setpoint.x = self._uav_state.x
-            setpoint.y = self._uav_state.y
-            setpoint.z = 0.0  # PX4 local NED ground level
-            setpoint.yaw = 0.0
-            self._takeoff_setpoint_pub.publish(setpoint)
 
         mode_msg = String()
         mode_msg.data = "disarm"
