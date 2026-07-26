@@ -25,7 +25,11 @@ class LandingController(Node):
 
         # "position" during the reset/takeoff phase (uav_rl_landing/environment/
         # reset_manager.py flies to + holds a TakeoffSetpoint), "velocity" once
-        # the RL agent's LandingCommand takes over for the episode itself.
+        # the RL agent's LandingCommand takes over for the episode itself, and
+        # "disarm" briefly at the end of each episode -- see reset_manager.py's
+        # land_and_disarm(). Without this, reset() used to fly straight from
+        # wherever the previous episode ended (often still resting on/near the
+        # platform) to the next episode's takeoff target while still armed.
         self.mode = "position"
 
         # Latest setpoint for each mode. Both start out None -- control_loop()
@@ -96,11 +100,13 @@ class LandingController(Node):
         self.takeoff_setpoint = msg
 
     def control_mode_callback(self, msg):
-        if msg.data not in ("position", "velocity"):
+        if msg.data not in ("position", "velocity", "disarm"):
             self.get_logger().warn(f"Ignoring unknown control mode: {msg.data!r}")
             return
         if msg.data != self.mode:
             self.get_logger().info(f"Control mode: {self.mode} -> {msg.data}")
+            if msg.data == "disarm":
+                self.disarm()
         self.mode = msg.data
 
     def arm(self):
@@ -119,6 +125,23 @@ class LandingController(Node):
         self.command_pub.publish(msg)
 
         self.get_logger().info("Arm Command Sent")
+
+    def disarm(self):
+        msg = VehicleCommand()
+        msg.timestamp = self.get_clock().now().nanoseconds // 1000
+        msg.command = VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM
+        msg.param1 = 0.0
+
+        msg.target_system = 1
+        msg.target_component = 1
+        msg.source_system = 1
+        msg.source_component = 1
+
+        msg.from_external = True
+
+        self.command_pub.publish(msg)
+
+        self.get_logger().info("Disarm Command Sent")
 
     def engage_offboard_mode(self):
         msg = VehicleCommand()
@@ -143,6 +166,12 @@ class LandingController(Node):
 
     def control_loop(self):
 
+        if self.mode == "disarm":
+            # Sitting disarmed between episodes -- nothing to publish, and
+            # deliberately not advancing offboard_counter, so the arm/engage
+            # retry sequence starts fresh once the next episode switches back
+            # to "position" mode.
+            return
         if self.mode == "position" and self.takeoff_setpoint is None:
             return
         if self.mode == "velocity" and self.command is None:

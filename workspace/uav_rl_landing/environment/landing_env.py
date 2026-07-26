@@ -83,6 +83,11 @@ class LandingEnv(Node):
         the first discretized state.
         """
 
+        if self.episode > 0:
+            # Nothing to disarm from before the very first episode.
+            self.reset_manager.land_and_disarm()
+            self._spin_for(self.parameters.simulation_parameters.post_landing_rest_time)
+
         pose = self.reset_manager.generate_initial_pose()
         self.reset_manager.start_takeoff(pose)
         self.reset_manager.reset_platform()

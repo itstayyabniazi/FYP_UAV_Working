@@ -151,6 +151,25 @@ class ResetManager:
         self._control_mode_pub.publish(mode_msg)
 
     # ---------------------------------------------------------
+    # End of episode
+    # ---------------------------------------------------------
+
+    def land_and_disarm(self):
+        """
+        Disarm landing_controller (see its "disarm" mode) so the UAV actually
+        sits still, rather than flying straight from wherever the previous
+        episode ended -- often still resting on/near the platform -- to the
+        next episode's takeoff target while still armed. landing_env.reset()
+        calls this before generating the next episode's pose; it briefly
+        rests (parameters.simulation_parameters.post_landing_rest_time) before
+        the next start_takeoff() re-arms and re-engages offboard mode.
+        """
+
+        mode_msg = String()
+        mode_msg.data = "disarm"
+        self._control_mode_pub.publish(mode_msg)
+
+    # ---------------------------------------------------------
     # Platform Reset
     # ---------------------------------------------------------
 
