@@ -39,6 +39,22 @@ services:
       # AMD / Intel GPU rendering
       - /dev/dri:/dev/dri
 
+    # Mapping /dev/dri above only passes the device node through -- opening
+    # it is still subject to normal Unix group permissions, and the
+    # container's user isn't automatically a member of whatever group owns
+    # it on the host. Without this, Gazebo can silently fail to acquire a
+    # GPU render context for any camera sensor ("libEGL warning: failed to
+    # open /dev/dri/renderD128: Permission denied"), which doesn't just
+    # break rendering -- it can stall/desync the physics simulation from
+    # what PX4 sees (confirmed: PX4 reports armed/offboard/healthy with zero
+    # failsafes, but the vehicle never actually generates thrust or moves).
+    # 992 is this project's host's `render` group GID (`stat -c '%g'
+    # /dev/dri/renderD128`) -- if you're on a different host, check that
+    # value there and update this accordingly.
+    group_add:
+      - "44"    # video
+      - "992"   # render
+
     working_dir: /workspace
 
     restart: unless-stopped
