@@ -57,6 +57,16 @@
           </box>
         </geometry>
         <material>
+          <!-- ambient/diffuse must be set to white here even though the
+               actual pattern comes from albedo_map below: gz-sim's PBR
+               pipeline blends the albedo texture against this base color,
+               which defaults to black when omitted, silently multiplying
+               the entire texture down to solid black regardless of what
+               the image contains (confirmed: file installs and resolves
+               correctly, no resource-path errors, still rendered as a
+               plain black rectangle until this was added). -->
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
           <pbr>
             <metal>
               <albedo_map>model://moving_platform/materials/textures/aruco_marker.png</albedo_map>
