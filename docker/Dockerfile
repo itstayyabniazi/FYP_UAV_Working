@@ -187,7 +187,10 @@ RUN mkdir -p /opt/Micro-XRCE-DDS-Agent/build && \
 # cv2.aruco lived in opencv-contrib for the OpenCV version Ubuntu 22.04's own
 # apt package (python3-opencv) ships; pip's contrib build is the reliable way
 # to get cv2.aruco regardless of exactly which OpenCV version resolves.
-RUN pip3 install --no-cache-dir opencv-contrib-python numpy
+# pymavlink here too: the headless GCS heartbeat script (workspace/tools/
+# gcs_heartbeat.py) needs it, previously a manual `pip3 install` every fresh
+# container.
+RUN pip3 install --no-cache-dir opencv-contrib-python numpy pymavlink
 
 # ------------------------------------------------------
 # Workspace
@@ -200,6 +203,15 @@ ENV USER=${USERNAME}
 ENV HOME=/home/${USERNAME}
 
 RUN echo "source /opt/ros/humble/setup.bash" >> /home/${USERNAME}/.bashrc && \
-    echo "source /opt/ros_gz_harmonic_ws/install/setup.bash" >> /home/${USERNAME}/.bashrc
+    echo "source /opt/ros_gz_harmonic_ws/install/setup.bash" >> /home/${USERNAME}/.bashrc && \
+    # Gazebo resolves model://<name>/... URIs (e.g. moving_platform's ArUco
+    # marker texture) by searching GZ_SIM_RESOURCE_PATH. This needs to be set
+    # in whichever terminal actually runs Gazebo (make px4_sitl gz_x500),
+    # not just the terminal that spawns the model -- separate shells don't
+    # share environment. Baked into every shell's startup here so it's never
+    # missed. Path is the fixed colcon install layout, so this is valid once
+    # `colcon build` has been run in this session (harmless if not yet built
+    # -- an unresolved GZ_SIM_RESOURCE_PATH entry is a no-op, not an error).
+    echo "export GZ_SIM_RESOURCE_PATH=/workspace/ros2_ws/install/moving_platform/share/moving_platform/models:\$GZ_SIM_RESOURCE_PATH" >> /home/${USERNAME}/.bashrc
 
 CMD ["/bin/bash"]
