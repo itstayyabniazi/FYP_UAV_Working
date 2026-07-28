@@ -75,6 +75,29 @@ CAMERA_TO_BODY = np.array([
 DETECTION_TIMEOUT_SEC = 0.5
 
 
+def build_detector_params():
+    """OpenCV's default ArucoDetector parameters are tuned for real camera
+    photos, which have a certain amount of natural blur/sensor noise the
+    defaults implicitly expect. A crisp synthetic Gazebo render, especially
+    when the marker is small/oblique in frame, can actually fail the
+    internal-pattern quality checks the defaults use (confirmed: a real
+    test image found candidate quad shapes right where the marker was, but
+    rejected all of them at the bit-decoding stage). Widen the adaptive
+    threshold window and sample more pixels per cell so it's more tolerant
+    of that. Keep this in sync with test_marker_detection.py's copy."""
+
+    if hasattr(cv2.aruco, "DetectorParameters_create"):
+        params = cv2.aruco.DetectorParameters_create()  # OpenCV < 4.7
+    else:
+        params = cv2.aruco.DetectorParameters()
+    params.adaptiveThreshWinSizeMin = 3
+    params.adaptiveThreshWinSizeMax = 53
+    params.adaptiveThreshWinSizeStep = 4
+    params.perspectiveRemovePixelPerCell = 8
+    params.minOtsuStdDev = 2.0
+    return params
+
+
 def euler_to_rotation_matrix(roll, pitch, yaw):
     """World-from-body rotation matrix for the 3-2-1 (yaw, pitch, roll)
     Euler convention used elsewhere in this repo (see px4_bridge's
@@ -98,12 +121,14 @@ class ArucoLandingTargetNode(Node):
 
         if hasattr(cv2.aruco, "ArucoDetector"):
             dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-            self._detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
+            self._detector = cv2.aruco.ArucoDetector(dictionary, build_detector_params())
             self._detect = lambda gray: self._detector.detectMarkers(gray)
         else:
-            # OpenCV < 4.7 fallback API.
+            # OpenCV < 4.7 fallback API. build_detector_params() returns a
+            # DetectorParameters instance either way -- same attribute names
+            # work on both the old and new classes.
             dictionary = cv2.aruco.Dictionary_get(ARUCO_DICT)
-            parameters = cv2.aruco.DetectorParameters_create()
+            parameters = build_detector_params()
             self._detect = lambda gray: cv2.aruco.detectMarkers(gray, dictionary, parameters=parameters)
 
         half = MARKER_SIZE_M / 2.0
