@@ -48,12 +48,13 @@ services:
     # break rendering -- it can stall/desync the physics simulation from
     # what PX4 sees (confirmed: PX4 reports armed/offboard/healthy with zero
     # failsafes, but the vehicle never actually generates thrust or moves).
-    # 992 is this project's host's `render` group GID (`stat -c '%g'
-    # /dev/dri/renderD128`) -- if you're on a different host, check that
-    # value there and update this accordingly.
+    # RENDER_GID is this machine's `render` group GID (`stat -c '%g'
+    # /dev/dri/renderD128`) -- it differs per host (e.g. 992 on one machine,
+    # 990 on another), so it's read from docker/.env rather than hardcoded
+    # here; update RENDER_GID there for whichever machine you're on.
     group_add:
-      - "44"    # video
-      - "992"   # render
+      - "44"                # video
+      - "${RENDER_GID:-992}" # render
 
     working_dir: /workspace
 
