@@ -52,9 +52,16 @@ services:
     # /dev/dri/renderD128`) -- it differs per host (e.g. 992 on one machine,
     # 990 on another), so it's read from docker/.env rather than hardcoded
     # here; update RENDER_GID there for whichever machine you're on.
+    #
+    # No inline ${VAR:-default} fallback here on purpose: confirmed on a
+    # real machine (Compose v5.3.1) that this specific "default value"
+    # interpolation syntax silently always resolved to its default,
+    # ignoring an actually-set .env value, while plain ${VAR} (as used for
+    # UID/GID/USERNAME above) substituted correctly. RENDER_GID must always
+    # be set in .env as a result -- there is no fallback.
     group_add:
-      - "44"                # video
-      - "${RENDER_GID:-992}" # render
+      - "44"           # video
+      - "${RENDER_GID}" # render
 
     working_dir: /workspace
 
