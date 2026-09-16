@@ -121,6 +121,8 @@ RUN apt-get update && \
     ros-humble-ros-gz-interfaces && \
     rm -rf /var/lib/apt/lists/*
 
+RUN pip3 install kconfiglib jinja2 empy==3.3.4 pyros-genmsg pyyaml
+
 # ------------------------------------------------------
 # ros_gz built from source against Harmonic
 # ------------------------------------------------------
