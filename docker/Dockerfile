@@ -10,9 +10,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ------------------------------------------------------
 # Build Arguments
 # ------------------------------------------------------
-ARG USERNAME=zanan
+ARG USERNAME=user
 ARG UID=1000
-ARG GID=1002
+ARG GID=1000
 
 # ------------------------------------------------------
 # System Packages
@@ -68,10 +68,14 @@ ENV LC_ALL=en_US.UTF-8
 # ------------------------------------------------------
 # Create User
 # ------------------------------------------------------
-RUN groupadd -g ${GID} ${USERNAME} && \
-    useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME} && \
-    usermod -aG sudo ${USERNAME} && \
-    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN groupadd -f -g ${GID} ${USERNAME} && \
+    id -u ${USERNAME} >/dev/null 2>&1 || \
+    useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME}
+
+#RUN groupadd -g ${GID} ${USERNAME} && \
+#    useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME} && \
+#    usermod -aG sudo ${USERNAME} && \
+#    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # ------------------------------------------------------
 # ROS 2 Repository
