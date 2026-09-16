@@ -9,7 +9,8 @@ services:
         UID: ${UID}
         GID: ${GID}
 
-    container_name: fyp-uav
+    image: my-image:latest
+    container_name: my-image
 
     stdin_open: true
     tty: true
@@ -18,7 +19,6 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - XAUTHORITY=/tmp/.docker.xauth
-      - LIBGL_ALWAYS_INDIRECT=0
 
     dns:
       - 8.8.8.8
@@ -66,3 +66,7 @@ services:
     working_dir: /workspace
 
     restart: unless-stopped
+
+    network_mode: host
+    ipc: host
+    privileged: true
