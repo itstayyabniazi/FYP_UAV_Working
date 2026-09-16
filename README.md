@@ -1,4 +1,4 @@
-# FYP UAV — Autonomous Landing of a Multi-Rotor on a Moving Platform
+# FYP UAV — Autonomous Landing of a Multi-Rotor on a Moving 
 
 Final Year Project: a multi-rotor UAV that autonomously detects and lands on a platform that is
 itself moving, using reinforcement learning to control the approach and descent instead of a
