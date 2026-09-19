@@ -68,25 +68,35 @@ class ResetManager:
     # Initial Position Generation
     # ---------------------------------------------------------
 
-    def generate_initial_pose(self):
+    def platform_position_local(self):
         """
-        Generate the UAV's initial (x, y, altitude-AGL) target for this
-        episode. simulation_parameters.init_*_x/y describe an OFFSET from the
-        platform's current position (not an absolute world position) -- so
-        the sampled starting point stays near the platform regardless of
-        where it currently is on its trajectory. Falls back to treating the
-        world origin as the platform's position if no /platform/state has
-        been received yet.
+        The hard-coded platform location, expressed in PX4's local NED frame
+        (the frame /uav/state and the takeoff setpoint live in).
+
+        Gazebo's world is ENU (x = east, y = north) while PX4's local frame is
+        NED (x = north, y = east), with its origin at the UAV's spawn point --
+        so passing the Gazebo coordinates straight through (as this used to)
+        puts the UAV at the mirrored point, x and y swapped.
         """
 
         sim = self.parameters.simulation_parameters
+        north = sim.platform_world_y - sim.uav_spawn_world_y
+        east = sim.platform_world_x - sim.uav_spawn_world_x
+        return north, east
 
-        # Set the target position to a fixed point
-        target_x = 5.0  # Specify the x-coordinate of the landing platform
-        target_y = 0.0  # Specify the y-coordinate of the landing platform
-        target_z = sim.init_altitude
+    def generate_initial_pose(self):
+        """
+        Generate the UAV's initial (x, y, altitude-AGL) target for this
+        episode: currently a fixed point directly above the hard-coded
+        platform location (simulation_parameters.platform_world_x/y), in PX4's
+        local NED frame. The init_* offset/distribution parameters are unused
+        while the platform location is hard-coded.
+        """
 
-        return {"x": float(target_x), "y": float(target_y), "z": float(target_z)}
+        sim = self.parameters.simulation_parameters
+        target_x, target_y = self.platform_position_local()
+
+        return {"x": float(target_x), "y": float(target_y), "z": float(sim.init_altitude)}
 
     # ---------------------------------------------------------
     # Takeoff (position-hold phase)
@@ -100,6 +110,12 @@ class ResetManager:
         mode_msg = String()
         mode_msg.data = "position"
         self._control_mode_pub.publish(mode_msg)
+
+        self.update_takeoff_target(pose)
+
+    def update_takeoff_target(self, pose):
+        """Publish a new position-hold target without touching the control mode
+        (used to slide the target down for a controlled descent)."""
 
         setpoint = TakeoffSetpoint()
         setpoint.x = pose["x"]

@@ -858,8 +858,8 @@
     "semantic_hash": "55d39d3466ef739dd09c9ebf3bc921a9"
   },
   "workspace/uav_rl_landing/agent/exploration.py": {
-    "mtime": 1783941986.8716333,
-    "seen": 1789810337.3571322,
+    "mtime": 1789811778.5563657,
+    "seen": 1789813214.5701091,
     "ast_hash": "7207c17fc4b40e3c9995006bf7b9f961",
     "semantic_hash": "7207c17fc4b40e3c9995006bf7b9f961"
   },
@@ -876,10 +876,10 @@
     "semantic_hash": "4a10df66f80e6b87b6d5f1151daeb70e"
   },
   "workspace/uav_rl_landing/config/parameters.py": {
-    "mtime": 1785056142.4457698,
-    "seen": 1789810337.3571377,
-    "ast_hash": "567ce200208e2aa3e4e972834054f9f5",
-    "semantic_hash": "567ce200208e2aa3e4e972834054f9f5"
+    "mtime": 1789813057.6520972,
+    "seen": 1789813214.5701127,
+    "ast_hash": "bfcb5e2ab2cfe6f80141f10b241519d2",
+    "semantic_hash": ""
   },
   "workspace/uav_rl_landing/environment/action_manager.py": {
     "mtime": 1784804849.8438458,
@@ -894,10 +894,10 @@
     "semantic_hash": "eb4121563fc3c5e1b855c8b34cffe1ae"
   },
   "workspace/uav_rl_landing/environment/reset_manager.py": {
-    "mtime": 1789656255.1455991,
-    "seen": 1789810337.3571541,
-    "ast_hash": "64a8b78b48761d04408b72b399af3cf7",
-    "semantic_hash": "64a8b78b48761d04408b72b399af3cf7"
+    "mtime": 1789813057.6522226,
+    "seen": 1789813214.570116,
+    "ast_hash": "71d98901eed98e61ba24a8ea44048cd1",
+    "semantic_hash": ""
   },
   "workspace/uav_rl_landing/environment/reward.py": {
     "mtime": 1784804849.8448806,
@@ -1125,6 +1125,12 @@
     "mtime": 1789811707.812542,
     "seen": 1789811759.4012744,
     "ast_hash": "7129271ed9eb388851929b760dc99df7",
+    "semantic_hash": ""
+  },
+  "workspace/uav_rl_landing/mission/takeoff_and_land.py": {
+    "mtime": 1789813076.5082822,
+    "seen": 1789813214.5701203,
+    "ast_hash": "1a8ba0acb52f8b236fb0f680a35a46e8",
     "semantic_hash": ""
   }
 }
