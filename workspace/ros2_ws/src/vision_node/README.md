@@ -10,6 +10,58 @@ camera instead, for demonstrating the open-world "land on a moving car"
 scenario -- the reference paper only ever validated indoors against a Vicon
 motion-capture rig, and never used any onboard perception at all.
 
+## Phase 2 quick path: camera-guided landing on a static platform
+
+The drone is **not told where the platform is**: it takes off, searches with the camera, and lands
+on the ArUco marker it finds. This is a scripted mission (like Phase 1's `takeoff_and_land.py`), not
+the RL agent -- at epsilon=1.0 the RL agent just flies randomly, so don't use `agent.q_learning` to
+test perception. Code: `workspace/uav_rl_landing/mission/` (`vision_landing.py` = search/track/land
+logic, `ros_io.py` = ROS wrapper + preflight, `vision_landing_main.py`, `vision_frame_check.py`).
+
+Needs: PX4 SITL + Micro-XRCE-DDS Agent + GCS heartbeat (as always), the platform spawned and left
+still (do NOT run `moving_platform_node` -- nothing here needs it, and a stale one caused a wrong
+landing in Phase 1), the x500 camera patch (section 2 below, done once), and these nodes, each in its
+own terminal with `source /opt/ros/humble/setup.bash && source /workspace/ros2_ws/install/setup.bash`:
+
+```bash
+# platform, anywhere you like (the drone does not know this); keep parameters.py's
+# platform_world_x/y equal to it so the final "error to ground truth" line is meaningful
+ros2 run ros_gz_sim create -world default -file $(ros2 pkg prefix moving_platform)/share/moving_platform/models/moving_platform/model.sdf -name moving_platform -x 10.0 -y 3.0 -z 0.025
+
+ros2 run ros_gz_bridge parameter_bridge /drone_camera@sensor_msgs/msg/Image@gz.msgs.Image /drone_camera/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo
+ros2 run px4_bridge uav_state_node
+ros2 run landing_controller landing_controller_node
+ros2 run vision_node aruco_landing_target_node
+```
+Not needed for this mission: `vision_relative_state_node`, `relative_state_node`,
+`moving_platform_node`, the cmd_vel bridge.
+
+Then, from `/workspace/uav_rl_landing`:
+```bash
+python3 -m mission.vision_frame_check     # once: proves the camera axes/signs are right
+python3 -m mission.vision_landing_main    # the mission
+```
+`vision_frame_check` flies to three known points around the platform (above it, 2 m south of it,
+2 m west of it) and compares `/landing_target` with the expected offsets, printing a swapped/flipped-
+axis hint on failure. Run it first: a sign error makes the visual-servo loop fly *away* from the
+marker.
+
+Both scripts refuse to arm if the camera bridge, `/uav/state` or `/landing_target` are missing, or if
+more than one node publishes `/landing_target`.
+
+Mission states: **SEARCH** (expanding-square spiral at 5 m, ~8.4x6.3 m camera footprint, 5 m legs, up
+to 30 m out; the marker must be confirmed in 3 detections within 1 s) -> **TRACK** (centre on the
+marker at up to 1.5 m/s, descend at 0.35 m/s only while within 0.25 m of centre, pause above 0.5 m;
+below 1 m the marker leaves the camera's field of view, so it keeps descending on the last estimate)
+-> **LAND** (PX4 `AUTO.LAND` from 0.5 m). If the marker is lost for 5 s above 1 m it climbs to 5 m over
+the last known spot (**RECOVER**); if it still can't see it, it restarts the search. If the whole
+spiral finds nothing, or the 300 s mission timeout hits, it lands where it is. Tunables are the
+`VisionLandingConfig` dataclass in `vision_landing.py`.
+
+The mission's search/track/recover logic is also exercised offline against a fake drone + camera
+(footprint geometry, noise, no detection below 0.7 m, dropouts); that does not replace the
+simulator run, it only means the state machine itself is sound.
+
 ## Architecture
 
 ```

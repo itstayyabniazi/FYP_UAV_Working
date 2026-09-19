@@ -76,6 +76,58 @@ node-by-node launch sequence.
 
 ## 3. What's been accomplished
 
+### Roadmap
+
+| Phase | Goal | Status |
+|---|---|---|
+| **1** | Take off and land on a **static platform whose coordinates are hard-coded** in the code | **Completed** (verified in simulation) |
+| **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | In progress — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform) |
+| 3+ | Moving platform, RL-controlled approach (the Q-learning work below), real hardware | Not started |
+
+### 3.1 Phase 1 — takeoff and landing on hard-coded platform coordinates (completed)
+
+The drone takes off, flies to the platform's saved location, descends onto it and lands. Confirmed in
+PX4 SITL + Gazebo Harmonic: the drone ends up on the platform, not merely near it.
+
+- **Where the location lives:** `platform_world_x/y` in
+  [`config/parameters.py`](workspace/uav_rl_landing/config/parameters.py), in **Gazebo world
+  coordinates** (ENU: x = east, y = north). Currently `(10, 3)`.
+- **Frame conversion:** PX4 flies in a local NED frame (x = north, y = east) whose origin is the
+  UAV's spawn point, so `ResetManager.platform_position_local()` converts the Gazebo coordinates
+  (`platform (10, 3)` → PX4 target `north = 3, east = 10`). An early version passed the Gazebo numbers
+  straight through, swapping x and y — that is why the drone first landed ~7 m from the platform.
+  If you set `PX4_GZ_MODEL_POSE` when launching PX4, mirror its x/y into `uav_spawn_world_x/y`.
+- **The mission:** [`mission/takeoff_and_land.py`](workspace/uav_rl_landing/mission/takeoff_and_land.py)
+  — take off to 3 m, hold above the platform, descend at 0.35 m/s holding x/y, hand the last 0.5 m to
+  PX4's own `AUTO.LAND`, and report the final distance from the platform centre. It reads the target
+  from `/platform/state` and **refuses to take off** if more than one node publishes that topic (a
+  stale `moving_platform_node` did exactly that once), the platform is reported moving, or its
+  position disagrees with the configured one.
+
+Running it (each in its own terminal, `source /opt/ros/humble/setup.bash` and
+`source /workspace/ros2_ws/install/setup.bash` first; PX4 SITL, the Micro-XRCE-DDS Agent and
+`tools/gcs_heartbeat.py` already running):
+```bash
+# spawn the platform where parameters.py says it is, and hold it still there
+ros2 run ros_gz_sim create -world default -file $(ros2 pkg prefix moving_platform)/share/moving_platform/models/moving_platform/model.sdf -name moving_platform -x 10.0 -y 3.0 -z 0.025
+ros2 run moving_platform moving_platform_node --ros-args -p center_x:=10.0 -p center_y:=3.0 -p radius:=0.0 -p angular_speed:=0.0
+
+ros2 run px4_bridge uav_state_node
+ros2 run landing_controller landing_controller_node
+
+cd /workspace/uav_rl_landing && python3 -m mission.takeoff_and_land
+```
+The spawn `-x/-y`, the node's `center_x/center_y` and `platform_world_x/y` must always agree.
+
+### 3.2 Phase 2 — camera-guided landing on a static platform
+
+See the [`vision_node` README](workspace/ros2_ws/src/vision_node/README.md) for the step-by-step run
+sequence. Summary: the drone is **not told where the platform is**. It takes off to a search altitude,
+flies an expanding-square search pattern while the ArUco detector watches the camera feed, and on
+confirming the marker it centres over it, descends, and lands.
+
+### 3.3 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
+
 - **Full ROS 2 pipeline, confirmed running end to end against live PX4 SITL + Gazebo Harmonic**:
   `px4_bridge` (PX4 topics → `UAVState`) → `relative_state` (→ `RLObservation`) →
   `landing_controller` (→ PX4 offboard setpoint). Verified by actually arming and flying the
