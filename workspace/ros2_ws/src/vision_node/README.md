@@ -16,7 +16,7 @@ The drone is **not told where the platform is**: it takes off, searches with the
 on the ArUco marker it finds. This is a scripted mission (like Phase 1's `takeoff_and_land.py`), not
 the RL agent -- at epsilon=1.0 the RL agent just flies randomly, so don't use `agent.q_learning` to
 test perception. Code: `workspace/uav_rl_landing/mission/` (`vision_landing.py` = search/track/land
-logic, `ros_io.py` = ROS wrapper + preflight, `vision_landing_main.py`, `vision_frame_check.py`).
+logic, `ros_io.py` = ROS wrapper + preflight, `vision_landing_main.py` = the entry point).
 
 Needs: PX4 SITL + Micro-XRCE-DDS Agent + GCS heartbeat (as always), the platform spawned and left
 still (do NOT run `moving_platform_node` -- nothing here needs it, and a stale one caused a wrong
@@ -36,27 +36,61 @@ ros2 run vision_node aruco_landing_target_node
 Not needed for this mission: `vision_relative_state_node`, `relative_state_node`,
 `moving_platform_node`, the cmd_vel bridge.
 
-Then, from `/workspace/uav_rl_landing`:
+**Live camera view** (any time the camera bridge is up):
 ```bash
-python3 -m mission.vision_frame_check     # once: proves the camera axes/signs are right
-python3 -m mission.vision_landing_main    # the mission
+ros2 run rqt_image_view rqt_image_view /drone_camera                  # raw feed
+ros2 run rqt_image_view rqt_image_view /landing_target/debug_image    # detection drawn on it + rel N/E/D
 ```
-`vision_frame_check` flies to three known points around the platform (above it, 2 m south of it,
-2 m west of it) and compares `/landing_target` with the expected offsets, printing a swapped/flipped-
-axis hint on failure. Run it first: a sign error makes the visual-servo loop fly *away* from the
-marker.
+The debug image is only produced while something is subscribed to it. If `rqt_image_view` can't open a
+window, use Gazebo's own GUI instead (top-right menu -> *Image Display* -> topic `drone_camera`).
 
-Both scripts refuse to arm if the camera bridge, `/uav/state` or `/landing_target` are missing, or if
-more than one node publishes `/landing_target`.
+**Camera intrinsics.** `aruco_landing_target_node` needs the camera's intrinsics and waits for
+`/drone_camera/camera_info`. If none arrives within 2 s of the first image it logs a WARNING and uses
+the ideal pinhole model for the SDF's 80 degree FOV (Gazebo's cameras are ideal pinholes, so this is
+what `camera_info` would say). This exists because the node used to wait silently: the ROS topic
+`/drone_camera/camera_info` stayed empty even though `gz topic -l` lists it, so nothing was
+ever detected and nothing said why (cause not established -- if the fallback warning appears for you,
+the bridge is not delivering `camera_info`; the fallback is exact for Gazebo's ideal cameras, so
+detection still works). The vision mission's preflight also refuses to
+arm unless `/landing_target` is actually producing messages.
 
-Mission states: **SEARCH** (expanding-square spiral at 5 m, ~8.4x6.3 m camera footprint, 5 m legs, up
-to 30 m out; the marker must be confirmed in 3 detections within 1 s) -> **TRACK** (centre on the
-marker at up to 1.5 m/s, descend at 0.35 m/s only while within 0.25 m of centre, pause above 0.5 m;
-below 1 m the marker leaves the camera's field of view, so it keeps descending on the last estimate)
--> **LAND** (PX4 `AUTO.LAND` from 0.5 m). If the marker is lost for 5 s above 1 m it climbs to 5 m over
-the last known spot (**RECOVER**); if it still can't see it, it restarts the search. If the whole
-spiral finds nothing, or the 300 s mission timeout hits, it lands where it is. Tunables are the
-`VisionLandingConfig` dataclass in `vision_landing.py`.
+Then, from `/workspace/uav_rl_landing`, one script:
+```bash
+python3 -m mission.vision_landing_main
+```
+It takes off to 5 m and flies the corners of a square, A -> B -> C -> D (default `0,0  0,9  9,9  9,0`,
+PX4 local NED north,east metres from the spawn point), hovering 2 s at each. **The moment the marker is
+confirmed -- mid-leg or at a corner -- the patrol stops** and the drone centres over it, descends and
+lands. It prints progress every 5 s while flying a leg, so a long leg doesn't look like a hang.
+
+```bash
+python3 -m mission.vision_landing_main --corners 0,0 0,9 9,9 9,0 --altitude 5   # your own square / altitude
+python3 -m mission.vision_landing_main --no-ground-truth   # platform moved without updating parameters.py
+```
+The camera only "sees" the marker within ~2 m east-west and ~3 m north-south of the flight path at 5 m
+(the UAV's own rotor arms and props block the outer ~130 px on each side of the 640 px image), so pick
+corners whose edges pass close enough to where the platform might be. The default square is placed so its
+B -> C leg passes the sim platform at north 3, east 10.
+
+**Built-in camera check (replaces the old separate frame-check script).** In the sim the configured
+platform location (`platform_world_x/y` in `parameters.py`) is used only as ground truth, never to
+steer. When the marker is first confirmed the mission prints the measured relative position, the
+estimated marker position, and how far that is from the ground truth. If it is more than 1 m off it
+prints a `MISMATCH` line -- with a swapped/flipped-axis hint when the pattern is recognisable -- and
+**lands where it is instead of following the estimate** (a wrong sign would otherwise fly the drone
+away from the marker). Either fix `CAMERA_TO_BODY`, or, if you moved the platform on purpose, update
+`parameters.py` or pass `--no-ground-truth`.
+
+The preflight refuses to arm if the camera bridge, `/uav/state` or `/landing_target` are missing, if
+more than one node publishes `/landing_target`, or if the aruco node is silent.
+
+Mission states: **PATROL** (square corners as above; marker must be confirmed in 3 detections within
+1 s) -> **TRACK** (centre on the marker at up to 1.5 m/s, descend at 0.35 m/s only while within 0.25 m
+of centre, pause above 0.5 m; below 1 m the marker leaves the camera's field of view, so it keeps
+descending on the last estimate) -> **LAND** (PX4 `AUTO.LAND` from 0.5 m). If the marker is lost for 5 s
+above 1 m it climbs back to 5 m over the last known spot (**RECOVER**); if it still can't see it, it
+restarts the patrol. If the square finishes without a sighting, or the 300 s mission timeout hits, it
+lands where it is. Tunables: the `VisionLandingConfig` dataclass in `vision_landing.py`.
 
 The mission's search/track/recover logic is also exercised offline against a fake drone + camera
 (footprint geometry, noise, no detection below 0.7 m, dropouts); that does not replace the

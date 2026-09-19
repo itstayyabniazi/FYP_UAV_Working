@@ -74,6 +74,13 @@ CAMERA_TO_BODY = np.array([
 # would make a lost target look like a stationary one to the consumer).
 DETECTION_TIMEOUT_SEC = 0.5
 
+# Gazebo publishes an ideal pinhole camera_info (square pixels, no distortion,
+# principal point at the image centre), so the intrinsics follow from the
+# horizontal FOV written into the sensor's SDF by patch_x500_camera.py. Used
+# ONLY as a fallback when no camera_info arrives (see _ensure_intrinsics).
+FALLBACK_HFOV_RAD = 1.3962634
+CAMERA_INFO_WAIT_SEC = 2.0
+
 
 def build_detector_params():
     """OpenCV's default ArucoDetector parameters are tuned for real camera
@@ -141,6 +148,8 @@ class ArucoLandingTargetNode(Node):
 
         self._camera_matrix = None
         self._dist_coeffs = None
+        self._first_image_t = None
+        self._using_fallback_intrinsics = False
 
         self._uav_attitude = None  # (roll, pitch, yaw), latest from /uav/state
 
@@ -160,6 +169,11 @@ class ArucoLandingTargetNode(Node):
 
         self.publisher = self.create_publisher(LandingTarget, "/landing_target", 10)
 
+        # Live view with the detection drawn on it, only produced while
+        # something is subscribed:
+        #   ros2 run rqt_image_view rqt_image_view /landing_target/debug_image
+        self._debug_pub = self.create_publisher(Image, "/landing_target/debug_image", 1)
+
         self.get_logger().info("ArUco Landing Target Node Started")
 
     def _on_uav_state(self, msg):
@@ -168,6 +182,55 @@ class ArucoLandingTargetNode(Node):
     def _on_camera_info(self, msg):
         self._camera_matrix = np.array(msg.k, dtype=np.float64).reshape(3, 3)
         self._dist_coeffs = np.array(msg.d, dtype=np.float64)
+        if self._using_fallback_intrinsics:
+            self._using_fallback_intrinsics = False
+            self.get_logger().info("Real camera_info received -- no longer using fallback intrinsics.")
+
+    def _ensure_intrinsics(self, msg, now):
+        """True once camera intrinsics are available. If no camera_info shows up
+        within CAMERA_INFO_WAIT_SEC of the first image, fall back to the ideal
+        pinhole model from FALLBACK_HFOV_RAD -- loudly, because a silent wait
+        here made the whole node mute (observed: Gazebo lists
+        /drone_camera/camera_info, yet `ros2 topic echo` on the bridged ROS
+        topic printed nothing -- cause not established)."""
+        if self._camera_matrix is not None:
+            return True
+        if self._first_image_t is None:
+            self._first_image_t = now
+        if now - self._first_image_t < CAMERA_INFO_WAIT_SEC:
+            return False
+        fx = (msg.width / 2.0) / math.tan(FALLBACK_HFOV_RAD / 2.0)
+        self._camera_matrix = np.array([
+            [fx, 0.0, msg.width / 2.0],
+            [0.0, fx, msg.height / 2.0],
+            [0.0, 0.0, 1.0],
+        ])
+        self._dist_coeffs = np.zeros(5)
+        self._using_fallback_intrinsics = True
+        self.get_logger().warn(
+            f"No message on /drone_camera/camera_info after {CAMERA_INFO_WAIT_SEC:.0f} s of images -- "
+            f"using an ideal pinhole model (hfov {FALLBACK_HFOV_RAD:.4f} rad, fx={fx:.1f}). "
+            "If this persists, check the camera bridge: `ros2 topic echo /drone_camera/camera_info --once` "
+            "should print a message.")
+        return True
+
+    def _emit_debug(self, frame, corners, ids, text):
+        """Publish the frame with detections drawn (only if someone is looking)."""
+        if self._debug_pub.get_subscription_count() == 0:
+            return
+        image = frame.copy()
+        if ids is not None and len(ids) > 0:
+            cv2.aruco.drawDetectedMarkers(image, corners, ids)
+        cv2.putText(image, text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+        cv2.putText(image, text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        out = Image()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = "drone_camera"
+        out.height, out.width = image.shape[:2]
+        out.encoding = "bgr8"
+        out.step = out.width * 3
+        out.data = image.tobytes()
+        self._debug_pub.publish(out)
 
     def _decode_image(self, msg):
         """Manual sensor_msgs/Image -> BGR numpy array, avoiding a cv_bridge
@@ -186,21 +249,26 @@ class ArucoLandingTargetNode(Node):
             raise ValueError(f"Unsupported image encoding: {msg.encoding!r}")
 
     def _on_image(self, msg):
-        if self._camera_matrix is None:
-            return  # no CameraInfo yet -- can't solvePnP without intrinsics
-        if self._uav_attitude is None:
-            return  # no attitude yet -- can't rotate camera-frame pose into world frame
-
         now = self.get_clock().now().nanoseconds / 1e9
+
+        if not self._ensure_intrinsics(msg, now):
+            return  # still waiting for camera_info
 
         frame = self._decode_image(msg)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
         corners, ids, _ = self._detect(gray)
+
+        if self._uav_attitude is None:
+            # Can't rotate the camera-frame pose into the world frame yet.
+            self.get_logger().warn("Waiting for /uav/state (attitude) -- is uav_state_node running?",
+                                   throttle_duration_sec=5.0)
+            self._emit_debug(frame, corners, ids, "waiting for /uav/state")
+            return
 
         target = LandingTarget()
 
         if ids is None or MARKER_ID not in ids.flatten():
+            self._emit_debug(frame, corners, ids, "marker NOT detected")
             self._publish_not_detected(target, now)
             return
 
@@ -211,6 +279,7 @@ class ArucoLandingTargetNode(Node):
             self._object_points, marker_corners, self._camera_matrix, self._dist_coeffs,
         )
         if not ok:
+            self._emit_debug(frame, corners, ids, "solvePnP failed")
             self._publish_not_detected(target, now)
             return
 
@@ -241,6 +310,8 @@ class ArucoLandingTargetNode(Node):
         self._last_valid_t = now
         self._last_valid_rel = (rel_x, rel_y, rel_z)
 
+        self._emit_debug(frame, corners, ids,
+                         f"rel N={rel_x:+.2f} E={rel_y:+.2f} D={rel_z:+.2f} m")
         self.publisher.publish(target)
 
     def _publish_not_detected(self, target: LandingTarget, now: float):

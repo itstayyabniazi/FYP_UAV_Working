@@ -35,6 +35,9 @@ class RosMissionIO:
         # ABSOLUTE PX4-local coordinates: UAV position at receipt + the
         # camera's relative measurement.
         self._detections = deque(maxlen=200)
+        # (wall time, detected) for EVERY /landing_target message, so a failed
+        # detection can be told apart from a silent aruco node.
+        self._messages = deque(maxlen=400)
         self.node.create_subscription(LandingTarget, "/landing_target", self._on_target, 10)
 
     def log(self, message):
@@ -74,6 +77,19 @@ class RosMissionIO:
             problems.append("nothing publishes /landing_target -- start `ros2 run vision_node aruco_landing_target_node`")
         elif n > 1:
             problems.append(f"{n} nodes publish /landing_target (expected 1) -- kill the stale one(s)")
+        elif not problems:
+            # A publisher existing proves nothing (a silent node still has
+            # one): require actual traffic. The aruco node reports
+            # detected=False for every frame it processes, so ANY message
+            # means camera_info (or its fallback), /uav/state and the images
+            # are all flowing.
+            deadline = time.time() + 6.0
+            while not self._messages and time.time() < deadline:
+                rclpy.spin_once(self.node, timeout_sec=0.2)
+            if not self._messages:
+                problems.append(
+                    "aruco_landing_target_node is running but published nothing on /landing_target "
+                    "in 6 s -- check its terminal (waiting for /uav/state? images not arriving?)")
         if self.node.count_publishers("/rl_observation") > 0:
             self.log("Note: something publishes /rl_observation (vision_relative_state_node / "
                      "relative_state_node / RL run). Not used by this mission; harmless.")
@@ -111,6 +127,7 @@ class RosMissionIO:
     # -- vision -----------------------------------------------
 
     def _on_target(self, msg):
+        self._messages.append((time.time(), bool(msg.detected)))
         s = self.reset._uav_state
         if not msg.detected or s is None:
             return
@@ -119,6 +136,12 @@ class RosMissionIO:
             s.x + msg.relative_x, s.y + msg.relative_y,
             msg.relative_x, msg.relative_y, msg.relative_z,
         ))
+
+    def stream_summary(self, window):
+        """(messages, of which detected) received on /landing_target in the last `window` s."""
+        now = time.time()
+        recent = [m for m in self._messages if now - m[0] <= window]
+        return len(recent), sum(1 for m in recent if m[1])
 
     def confirmed(self, count, window):
         now = time.time()

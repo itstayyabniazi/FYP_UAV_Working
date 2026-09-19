@@ -5,14 +5,16 @@ Phase 2 mission: take off, SEARCH for the platform's ArUco marker with the
 downward camera, centre over it, descend, and land -- without being told where
 the platform is.
 
-    SEARCH  fly an expanding-square spiral at the search altitude until the
-            marker is detected (confirmed over several frames, not one).
+    PATROL  fly the corners of a square (A -> B -> C -> D) at the search
+            altitude, hovering briefly at each. The moment the marker is
+            confirmed (several frames, not one) -- mid-leg or at a corner --
+            the patrol stops and the drone goes for it.
     TRACK   servo x/y onto the marker's estimated position; descend only while
             aligned (hysteresis), hold altitude otherwise. Below
             servo_min_altitude the marker leaves the camera's field of view, so
             it keeps descending on the last estimate.
     LOST    marker gone for lost_timeout while still high: climb over the last
-            known position to widen the view; re-acquire -> TRACK, else SEARCH.
+            known position to widen the view; re-acquire -> TRACK, else PATROL.
     LAND    hand the last stretch to PX4's AUTO.LAND (lands at the current x/y).
 
 The marker position it aims at is ABSOLUTE (UAV position at detection time +
@@ -38,10 +40,21 @@ from typing import Optional, Tuple
 @dataclass
 class VisionLandingConfig:
     search_altitude: float = 5.0     # [m] marker is ~38 px wide here (0.5 m marker, 640 px, 80 deg FOV)
-    search_speed: float = 1.5        # [m/s] setpoint speed along the search pattern
+    # Corners of the patrol square, PX4 local NED (x = north, y = east) [m], flown
+    # in order. The camera's USABLE footprint at 5 m is only ~5 m east-west (the
+    # UAV's own rotor arms/props block the outer ~130 px on each side of the
+    # 640 px image) x ~6.3 m north-south, so a leg only "sees" the marker if it
+    # passes within ~2 m east-west / ~3 m north-south of it. Edit these to cover
+    # your search area. The default 9 m square is placed so its B->C leg passes
+    # the sim platform at (north 3, east 10).
+    patrol_corners: Tuple[Tuple[float, float], ...] = (
+        (0.0, 0.0), (0.0, 9.0), (9.0, 9.0), (9.0, 0.0))
+    corner_tolerance: float = 0.5    # [m] how close counts as "at the corner"
+    corner_timeout: float = 30.0     # [s] give up waiting to reach a corner
+    dwell_time: float = 2.0          # [s] hover at each corner, looking
+    progress_period: float = 5.0     # [s] between progress log lines
+    search_speed: float = 1.5        # [m/s] setpoint speed along the patrol
     climb_speed: float = 1.0         # [m/s]
-    spiral_step: float = 5.0         # [m] leg increment; camera footprint at 5 m is ~8.4 x 6.3 m
-    spiral_max_leg: float = 30.0     # [m] give up once the spiral would exceed this leg length
     approach_speed: float = 1.5      # [m/s] setpoint speed while centring on the marker
     descent_rate: float = 0.35       # [m/s]
     align_tol: float = 0.25          # [m] start/continue descending below this offset
@@ -51,7 +64,7 @@ class VisionLandingConfig:
     confirm_count: int = 3           # detections needed ...
     confirm_window: float = 1.0      # ... within this many seconds to accept the marker
     lost_timeout: float = 5.0        # [s] no detections while above servo_min_altitude -> LOST
-    recover_wait: float = 8.0        # [s] wait at search altitude before falling back to SEARCH
+    recover_wait: float = 8.0        # [s] wait at search altitude before restarting the PATROL
     takeoff_timeout: float = 40.0    # [s]
     mission_timeout: float = 300.0   # [s]
     dt: float = 0.1                  # [s] control period
@@ -125,47 +138,105 @@ class VisionLander:
     # ---------------------------------------------------------
 
     @staticmethod
-    def _spiral(x0, y0, step, max_leg):
-        """Expanding square, x = north, y = east: N1 E1 S2 W2 N3 E3 ... (legs
-        in units of `step`). Yields corner waypoints."""
-        directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
-        x, y, leg, i = x0, y0, 1, 0
-        while leg * step <= max_leg:
-            for _ in range(2):
-                dx, dy = directions[i % 4]
-                x += dx * leg * step
-                y += dy * leg * step
-                yield x, y
-                i += 1
-            leg += 1
+    def _label(index):
+        return chr(ord("A") + index) if index < 26 else str(index + 1)
 
-    def _search(self):
+    def _seen(self):
+        return self.io.confirmed(self.cfg.confirm_count, self.cfg.confirm_window)
+
+    def _patrol(self):
+        """Fly the corners in order, hovering `dwell_time` at each; return
+        "TRACK" the instant the marker is confirmed, "NOT_FOUND" if the last
+        corner is done without it."""
         cfg = self.cfg
-        x0, y0, _ = self.io.uav_position()
-        self.log(f"SEARCH: spiral from ({x0:.1f}, {y0:.1f}) at {cfg.search_altitude} m, "
-                 f"step {cfg.spiral_step} m, max leg {cfg.spiral_max_leg} m")
-        # Get to search altitude first (may be called from a lower altitude).
-        waypoints = [(x0, y0)] + list(self._spiral(x0, y0, cfg.spiral_step, cfg.spiral_max_leg))
-        for wx, wy in waypoints:
-            while not self._step(wx, wy, cfg.search_altitude, cfg.search_speed, cfg.climb_speed):
-                self._check_timeout()
-                if self.io.confirmed(cfg.confirm_count, cfg.confirm_window):
-                    return self._acquired()
-            if self.io.confirmed(cfg.confirm_count, cfg.confirm_window):
+        corners = cfg.patrol_corners
+        route = "  ".join(f"{self._label(i)}=({x:.1f}, {y:.1f})" for i, (x, y) in enumerate(corners))
+        self.log(f"PATROL at {cfg.search_altitude} m: {route}")
+        for index, (cx, cy) in enumerate(corners):
+            name = self._label(index)
+            self.log(f"--- Point {name}: flying to NED ({cx:.1f}, {cy:.1f}) at {cfg.search_altitude} m")
+            if self._fly_to_corner(cx, cy, name):
                 return self._acquired()
+            x, y, alt = self.io.uav_position()
+            self.log(f"  at point {name} ({x:.1f}, {y:.1f}, {alt:.1f} m); hovering "
+                     f"{cfg.dwell_time:.0f} s, looking for the marker")
+            end = self.io.now() + cfg.dwell_time
+            while self.io.now() < end:
+                self._check_timeout()
+                self._step(cx, cy, cfg.search_altitude, cfg.search_speed, cfg.climb_speed)
+                if self._seen():
+                    return self._acquired()
         return "NOT_FOUND"
+
+    def _fly_to_corner(self, cx, cy, name):
+        """Fly to a corner, checking for the marker on every control tick, and
+        logging progress so a slow leg doesn't look like a hung mission.
+        Returns True if the marker was confirmed on the way."""
+        cfg = self.cfg
+        start = last_log = self.io.now()
+        while True:
+            self._check_timeout()
+            arrived = self._step(cx, cy, cfg.search_altitude, cfg.search_speed, cfg.climb_speed)
+            if self._seen():
+                return True
+            x, y, alt = self.io.uav_position()
+            now = self.io.now()
+            if arrived and math.hypot(x - cx, y - cy) <= cfg.corner_tolerance:
+                return False
+            if now - start > cfg.corner_timeout:
+                self.log(f"  gave up waiting to reach point {name} after {cfg.corner_timeout:.0f} s")
+                return False
+            if now - last_log >= cfg.progress_period:
+                last_log = now
+                self.log(f"  ... UAV at ({x:.1f}, {y:.1f}, {alt:.1f} m), "
+                         f"{math.hypot(x - cx, y - cy):.1f} m to point {name}, no marker yet")
+
+    @staticmethod
+    def _axis_hint(expected_rel, measured_rel, tol=0.75):
+        """Swapped / sign-flipped north-east axes, judged from the expected vs
+        measured marker offset (north, east) relative to the UAV."""
+        ex, ey = expected_rel
+        mx, my = measured_rel
+        hints = []
+        if abs(ex - ey) > 2 * tol and abs(mx - ey) <= tol and abs(my - ex) <= tol:
+            hints.append("north/east look SWAPPED")
+        if abs(ex) > 2 * tol and abs(mx + ex) <= tol:
+            hints.append("north (X) sign looks FLIPPED")
+        if abs(ey) > 2 * tol and abs(my + ey) <= tol:
+            hints.append("east (Y) sign looks FLIPPED")
+        return ", ".join(hints)
 
     def _acquired(self):
         est = self.io.estimate()
         if est is None:  # detections aged out between the check and here
-            return "SEARCH"
+            return "PATROL"
         self.target = est
-        self.log(f"Marker acquired: estimated at ({est[0]:.2f}, {est[1]:.2f}).")
+        x, y, alt = self.io.uav_position()
+        self.log(f"MARKER DETECTED at UAV NED ({x:.1f}, {y:.1f}, {alt:.1f} m) -- patrol stopped, "
+                 "landing on it.")
+        measure = getattr(self.io, "relative_measurement", None)
+        rel = measure(0.4) if measure else None  # short window: the UAV is moving
+        if rel is not None:
+            self.log(f"  measured rel (N, E, D) = ({rel[0]:+.2f}, {rel[1]:+.2f}, {rel[2]:.2f}) "
+                     f"[{rel[3]} detections]; marker estimated at NED ({est[0]:.2f}, {est[1]:.2f})")
+        else:
+            self.log(f"  marker estimated at NED ({est[0]:.2f}, {est[1]:.2f})")
         expected = self.cfg.expected_xy
-        if expected is not None and math.hypot(est[0] - expected[0], est[1] - expected[1]) > 1.0:
-            self.log(f"WARNING: expected the platform near ({expected[0]:.2f}, {expected[1]:.2f}) "
-                     "(sim ground truth). Either the platform is elsewhere, or the camera frame "
-                     "convention is off -- run mission.vision_frame_check.")
+        if expected is not None:
+            error = math.hypot(est[0] - expected[0], est[1] - expected[1])
+            if error <= 1.0:
+                self.log(f"  sim ground truth ({expected[0]:.2f}, {expected[1]:.2f}): "
+                         f"estimate {error:.2f} m off -- OK (camera axes/signs check out)")
+            else:
+                hint = ""
+                if rel is not None:
+                    hint = self._axis_hint((expected[0] - x, expected[1] - y), rel[:2])
+                self.log(f"  MISMATCH: sim ground truth says the platform is at ({expected[0]:.2f}, "
+                         f"{expected[1]:.2f}), {error:.1f} m from the camera's estimate. Either the "
+                         "platform is elsewhere (update platform_world_x/y in parameters.py, or run with "
+                         "--no-ground-truth), or the camera axes/signs are wrong (CAMERA_TO_BODY"
+                         + (f": {hint}" if hint else "") + "). Not following the estimate -- landing here.")
+                return "MISMATCH"
         return "TRACK"
 
     def _track(self):
@@ -215,7 +286,7 @@ class VisionLander:
             if arrived:
                 deadline = deadline or self.io.now() + cfg.recover_wait
                 if self.io.now() > deadline:
-                    return "SEARCH"
+                    return "PATROL"
 
     # ---------------------------------------------------------
     # Mission
@@ -239,13 +310,14 @@ class VisionLander:
                     outcome = "TAKEOFF_FAILED"
                     break
             else:
-                state = "SEARCH"
-                while state not in ("FINAL", "NOT_FOUND"):
-                    state = {"SEARCH": self._search, "TRACK": self._track,
+                state = "PATROL"
+                while state not in ("FINAL", "NOT_FOUND", "MISMATCH"):
+                    state = {"PATROL": self._patrol, "TRACK": self._track,
                              "LOST": self._recover}[state]()
-                outcome = "LANDED" if state == "FINAL" else "NOT_FOUND"
+                outcome = {"FINAL": "LANDED", "NOT_FOUND": "NOT_FOUND",
+                           "MISMATCH": "ESTIMATE_MISMATCH"}[state]
                 if state == "NOT_FOUND":
-                    self.log("Search pattern finished without finding the marker -- landing here.")
+                    self.log("Patrol finished without seeing the marker -- landing here.")
         except MissionTimeout:
             outcome = "TIMEOUT"
             self.log(f"Mission timeout ({cfg.mission_timeout:.0f} s) -- landing here.")

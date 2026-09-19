@@ -1,4 +1,4 @@
-# FYP UAV — Autonomous Landing of a Multi-Rotor on a Moving 
+# FYP UAV — Autonomous Landing of a Multi-Rotor on a Moving Platform
 
 Final Year Project: a multi-rotor UAV that autonomously detects and lands on a platform that is
 itself moving, using reinforcement learning to control the approach and descent instead of a
@@ -81,8 +81,9 @@ node-by-node launch sequence.
 | Phase | Goal | Status |
 |---|---|---|
 | **1** | Take off and land on a **static platform whose coordinates are hard-coded** in the code | **Completed** (verified in simulation) |
-| **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | In progress — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform) |
-| 3+ | Moving platform, RL-controlled approach (the Q-learning work below), real hardware | Not started |
+| **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | **Completed** (verified in simulation) — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform-completed) |
+| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Next** — see [§3.3](#33-phase-3--landing-on-a-moving-platform-next) |
+| 4+ | RL-controlled approach (the Q-learning work in §3.4), real hardware | Not started |
 
 ### 3.1 Phase 1 — takeoff and landing on hard-coded platform coordinates (completed)
 
@@ -119,14 +120,72 @@ cd /workspace/uav_rl_landing && python3 -m mission.takeoff_and_land
 ```
 The spawn `-x/-y`, the node's `center_x/center_y` and `platform_world_x/y` must always agree.
 
-### 3.2 Phase 2 — camera-guided landing on a static platform
+### 3.2 Phase 2 — camera-guided landing on a static platform (completed)
 
-See the [`vision_node` README](workspace/ros2_ws/src/vision_node/README.md) for the step-by-step run
-sequence. Summary: the drone is **not told where the platform is**. It takes off to a search altitude,
-flies an expanding-square search pattern while the ArUco detector watches the camera feed, and on
-confirming the marker it centres over it, descends, and lands.
+The drone is **not told where the platform is**. It takes off to 5 m and flies the corners of a square
+(A → B → C → D), hovering 2 s at each, while the ArUco detector watches the downward camera. The moment
+the marker is confirmed (3 detections within 1 s) — mid-leg or at a corner — it stops the patrol,
+centres over the marker, descends only while aligned, and hands the last 0.5 m to PX4's `AUTO.LAND`.
+Full run sequence, tunables and troubleshooting: the
+[`vision_node` README](workspace/ros2_ws/src/vision_node/README.md).
 
-### 3.3 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
+**Result in PX4 SITL + Gazebo Harmonic** (platform at Gazebo `(10, 3)`, drone spawned at the origin):
+the drone detected the marker just after leaving corner B, landed, and ended **0.05 m from the platform
+centre** (the platform's half-width is 0.75 m); the camera's own marker estimate was within 0.03 m of
+where it landed. The camera frame convention (`CAMERA_TO_BODY`) was verified at three known hover
+points before this: measured relative offsets matched the expected ones to ~0.1 m in x/y.
+
+Run it (each node in its own terminal, `source /opt/ros/humble/setup.bash` and
+`source /workspace/ros2_ws/install/setup.bash` first; PX4 SITL, the Micro-XRCE-DDS Agent and
+`tools/gcs_heartbeat.py` already running; **do not** run `moving_platform_node`):
+```bash
+ros2 run ros_gz_sim create -world default -file $(ros2 pkg prefix moving_platform)/share/moving_platform/models/moving_platform/model.sdf -name moving_platform -x 10.0 -y 3.0 -z 0.025
+ros2 run ros_gz_bridge parameter_bridge /drone_camera@sensor_msgs/msg/Image@gz.msgs.Image /drone_camera/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo
+ros2 run px4_bridge uav_state_node
+ros2 run landing_controller landing_controller_node
+ros2 run vision_node aruco_landing_target_node
+
+cd /workspace/uav_rl_landing && python3 -m mission.vision_landing_main
+```
+Optional live view: `ros2 run rqt_image_view rqt_image_view /landing_target/debug_image` (detections drawn
+on the camera frame).
+
+What was learned building it (worth knowing before Phase 3):
+- **The UAV's own rotor arms and props block the outer ~130 px on each side of the camera image**, so the
+  usable footprint at 5 m is only ~5 m east-west × ~6.3 m north-south. Patrol legs must pass close to
+  where the platform might be.
+- The mission cross-checks the camera against the configured platform location (sim ground truth only,
+  never used to steer). A > 1 m disagreement prints a `MISMATCH` line (with a swapped/flipped-axis hint) and
+  **lands instead of following the estimate**; `--no-ground-truth` disables it. The first-sight estimate at
+  the image edge can be ~0.6 m off before the drone centres over the marker, so that limit has limited margin.
+- The preflight refuses to arm unless the camera, `/uav/state` and `/landing_target` are all live, and
+  exactly one node publishes `/landing_target`. (A silent aruco node and a stale duplicate publisher each
+  cost a debugging round earlier.)
+- `aruco_landing_target_node` falls back to the ideal pinhole intrinsics for the 80° FOV if no
+  `camera_info` arrives within 2 s (it logs a warning), because a silent wait made it publish nothing.
+
+### 3.3 Phase 3 — landing on a moving platform (next)
+
+Goal: the same take-off → find-by-camera → land sequence, but the platform is **moving**, with two motion
+types: **linear** and **circular**.
+
+What already exists: `moving_platform_node` drives the Gazebo platform along a **circle** (radius,
+angular speed and centre are ROS parameters; default 1.5 m at 0.3 rad/s ≈ 0.45 m/s) and publishes the
+analytic ground truth on `/platform/state`. What is still missing or will need to change:
+- **Linear motion** does not exist yet — needs a linear mode in `moving_platform_node` (constant-velocity
+  or back-and-forth along a line), spawned/driven consistently with its ground truth.
+- **The Phase 2 landing logic assumes a static marker.** It averages *absolute* marker positions,
+  descends toward a frozen estimate below 1 m (where the marker leaves the camera's view), and hands off
+  to `AUTO.LAND` at a fixed x/y. For a moving platform it must instead estimate the marker's velocity,
+  lead it, keep following it all the way down, and land with matched velocity.
+- **The search:** a fixed patrol may never meet a moving target; the search/acquire logic needs a rethink.
+- **Known open issues to fix on the way:** `relative_state_node` subtracts an ENU platform position from
+  an NED UAV position (swapped axes in the ground-truth observation); the Gazebo platform is driven
+  open-loop and can drift from its analytic ground truth; there is no contact sensor.
+
+No Phase 3 code has been written yet.
+
+### 3.4 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
 
 - **Full ROS 2 pipeline, confirmed running end to end against live PX4 SITL + Gazebo Harmonic**:
   `px4_bridge` (PX4 topics → `UAVState`) → `relative_state` (→ `RLObservation`) →
@@ -170,13 +229,9 @@ confirming the marker it centres over it, descends, and lands.
   scope, but short of the full landing problem.
 - **No contact sensor.** Touchdown is inferred from altitude + horizontal offset + speed
   thresholds, not a real Gazebo contact event — there's no bridged contact-sensor plugin yet.
-- **Vision pipeline is implemented but unverified against real sensor data.** `vision_node` now has
-  a full ArUco-marker perception path (camera → `aruco_landing_target_node` → solvePnP →
-  `vision_relative_state_node` → `/rl_observation`), including a target-lost watchdog
-  (`termination.py`'s `"target_lost"` outcome), as a deployment/demo alternative to the
-  ground-truth training path — see `workspace/ros2_ws/src/vision_node/README.md`. RL training still
-  uses ground truth by design (that's what's actually been validated); the camera-mount frame
-  transform needs the hover-test calibration described in that README before it can be trusted.
+- **Vision pipeline: verified in simulation for a static platform only** (Phase 2, §3.2). It has not been
+  run against a moving platform or a real camera; relative velocity is still a raw finite difference (no
+  filtering). RL training still uses ground truth by design.
 - **Reward function is unnormalized.** `reward.py`'s weights were tuned (in the reference paper)
   for observations clipped to `[-1,1]`; here they're applied to raw meters/m·s⁻¹, so
   `episode_reward` lands in the thousands rather than a small bounded number. Not broken, just
