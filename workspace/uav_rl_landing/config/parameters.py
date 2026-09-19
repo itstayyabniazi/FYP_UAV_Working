@@ -144,6 +144,19 @@ class SimulationParameters(UAVParameters):
 
         self.init_altitude: float = 3.0  # [m] AGL
 
+        # Hard-coded landing platform location, in GAZEBO WORLD coordinates
+        # (ENU: x = east, y = north) -- i.e. the same numbers passed to
+        # `ros2 run ros_gz_sim create ... -x <x> -y <y>` when spawning the
+        # platform. reset_manager.py converts these into PX4's local NED frame.
+        self.platform_world_x: float = 5.0  # [m]
+        self.platform_world_y: float = 0.0  # [m]
+
+        # Where the UAV was spawned in the Gazebo world. PX4's local NED frame
+        # has its origin at this point (default: the world origin, unless
+        # PX4_GZ_MODEL_POSE was set when launching `make px4_sitl gz_x500`).
+        self.uav_spawn_world_x: float = 0.0  # [m]
+        self.uav_spawn_world_y: float = 0.0  # [m]
+
         # Below this altitude above the platform (rel_z), with no successful
         # landing criteria met, the episode ends as a failed/crash landing.
         # NOTE: there is no contact sensor wired up yet (no Gazebo contact
