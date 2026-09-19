@@ -1,3 +1,4 @@
+# workspace/uav_rl_landing/environment/reset_manager.py
 """
 reset_manager.py
 
@@ -80,25 +81,12 @@ class ResetManager:
 
         sim = self.parameters.simulation_parameters
 
-        if sim.init_distribution == "normal":
-            offset_x = np.random.normal(sim.init_mu_x, sim.init_sigma_x)
-        else:
-            offset_x = np.random.uniform(sim.init_min_x, sim.init_max_x)
+        # Set the target position to a fixed point
+        target_x = 5.0  # Specify the x-coordinate of the landing platform
+        target_y = 0.0  # Specify the y-coordinate of the landing platform
+        target_z = sim.init_altitude
 
-        offset_y = np.random.uniform(sim.init_min_y, sim.init_max_y)
-
-        if self._platform_state is not None:
-            platform_x = self._platform_state.x
-            platform_y = self._platform_state.y
-        else:
-            platform_x = 0.0
-            platform_y = 0.0
-
-        x = platform_x + offset_x
-        y = platform_y + offset_y
-        z = sim.init_altitude
-
-        return {"x": float(x), "y": float(y), "z": float(z)}
+        return {"x": float(target_x), "y": float(target_y), "z": float(target_z)}
 
     # ---------------------------------------------------------
     # Takeoff (position-hold phase)
@@ -204,3 +192,4 @@ class ResetManager:
         """
 
         pass
+
