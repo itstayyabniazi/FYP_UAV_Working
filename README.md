@@ -2,9 +2,9 @@
   <img src="docs/banner.png" alt="Project Atlas — AI-driven tracking and landing on actively-moving surfaces: a UAV approaching a moving recovery platform carrying an ArUco marker" width="100%">
 </p>
 
-# FYP UAV — Autonomous Landing of a Multi-Rotor on a Moving Platform
+# Project Atlas — Autonomous Landing of a Multi-Rotor on a Moving Platform
 
-Final Year Project: a multi-rotor UAV that autonomously detects and lands on a platform that is
+**Project Atlas** is a Final Year Project: a multi-rotor UAV that autonomously detects and lands on a platform that is
 itself moving, using reinforcement learning to control the approach and descent instead of a
 hand-tuned classical controller.
 
