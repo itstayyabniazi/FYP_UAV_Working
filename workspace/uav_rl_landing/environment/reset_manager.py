@@ -68,10 +68,12 @@ class ResetManager:
     # Initial Position Generation
     # ---------------------------------------------------------
 
-    def platform_position_local(self):
+    def platform_position_local(self, world_x=None, world_y=None):
         """
-        The hard-coded platform location, expressed in PX4's local NED frame
-        (the frame /uav/state and the takeoff setpoint live in).
+        A platform location (default: the hard-coded one), expressed in PX4's
+        local NED frame (the frame /uav/state and the takeoff setpoint live
+        in). world_x/world_y are Gazebo ENU coordinates, e.g. from
+        /platform/state.
 
         Gazebo's world is ENU (x = east, y = north) while PX4's local frame is
         NED (x = north, y = east), with its origin at the UAV's spawn point --
@@ -80,8 +82,12 @@ class ResetManager:
         """
 
         sim = self.parameters.simulation_parameters
-        north = sim.platform_world_y - sim.uav_spawn_world_y
-        east = sim.platform_world_x - sim.uav_spawn_world_x
+        if world_x is None:
+            world_x = sim.platform_world_x
+        if world_y is None:
+            world_y = sim.platform_world_y
+        north = world_y - sim.uav_spawn_world_y
+        east = world_x - sim.uav_spawn_world_x
         return north, east
 
     def generate_initial_pose(self):

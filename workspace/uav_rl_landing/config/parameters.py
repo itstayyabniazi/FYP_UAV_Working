@@ -148,8 +148,8 @@ class SimulationParameters(UAVParameters):
         # (ENU: x = east, y = north) -- i.e. the same numbers passed to
         # `ros2 run ros_gz_sim create ... -x <x> -y <y>` when spawning the
         # platform. reset_manager.py converts these into PX4's local NED frame.
-        self.platform_world_x: float = 5.0  # [m]
-        self.platform_world_y: float = 0.0  # [m]
+        self.platform_world_x: float = 10.0  # [m]
+        self.platform_world_y: float = 3.0   # [m]
 
         # Where the UAV was spawned in the Gazebo world. PX4's local NED frame
         # has its origin at this point (default: the world origin, unless
