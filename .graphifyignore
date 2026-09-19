@@ -1,0 +1,17 @@
+# Vendored / third-party code (huge, not your own logic)
+workspace/px4/
+workspace/tools/
+workspace/rl_multi_rotor_landing/submodules/
+
+# Symlink back to the project root (would recurse)
+FYP_UAV
+
+# Build output, data and media
+build/
+install/
+log/
+datasets/
+*.gif
+*.png
+*.o
+*.d
