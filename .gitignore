@@ -69,7 +69,11 @@ workspace/ros2_ws/src/ros_gz/
 squashfs-root/
 
 # ======================================================
-# Graphify (generated knowledge graph)
+# Graphify (graphify-out/ is tracked; ignore only local/churny files)
 # ======================================================
 
-graphify-out/
+graphify-out/cost.json
+graphify-out/.graphify_python
+graphify-out/cache/stat-index.json
+graphify-out/cache/ast/
+graphify-out/20*/
