@@ -1,9 +1,9 @@
 # Graph Report - FYP_UAV  (2026-09-19)
 
 ## Corpus Check
-- 168 files · ~69,536 words
+- 168 files · ~69,843 words
 - Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 376 file(s) not represented in the graph (top: .msg 275, .launch 34, (none) 22)
+- Unclassified: 377 file(s) not represented in the graph (top: .msg 275, .launch 34, (none) 23)
 
 ## Summary
 - 1301 nodes · 1911 edges · 129 communities (93 shown, 36 thin omitted)
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `805ca274`
+- Built from commit: `0798860f`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -240,7 +240,7 @@ Nodes (14): ndarray, QLearning, Function scales the values of a Q-table. Two opt
 
 ### Community 16 - "ResetManager"
 Cohesion: 0.09
-Nodes (11): Command landing_controller into position-hold mode, targeting `pose`., Publish a new position-hold target without touching the control mode (used to…, True once /uav/state has converged on `pose` within tolerance., Hand control back to the RL agent's velocity commands., Disarm landing_controller (see its "disarm" mode) so the UAV actually sits…, Deliberately a no-op: moving_platform_node.py now drives the platform on a…, node : rclpy.node.Node The owning node, used to create subscriptions/publishers., The hard-coded platform location, expressed in PX4's local NED frame (the frame… (+3 more)
+Nodes (11): Command landing_controller into position-hold mode, targeting `pose`., Publish a new position-hold target without touching the control mode (used to…, True once /uav/state has converged on `pose` within tolerance., Hand control back to the RL agent's velocity commands., Disarm landing_controller (see its "disarm" mode) so the UAV actually sits…, Deliberately a no-op: moving_platform_node.py now drives the platform on a…, node : rclpy.node.Node The owning node, used to create subscriptions/publishers., A platform location (default: the hard-coded one), expressed in PX4's local NED… (+3 more)
 
 ### Community 17 - "numpy"
 Cohesion: 0.16
@@ -555,9 +555,9 @@ Nodes (3): flake8, linter, test_flake8()
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `RLObservation.msg` connect `RL Landing Repo Overview` to `q_learning.py`?**
-  _High betweenness centrality (0.075) - this node is a cross-community bridge._
+  _High betweenness centrality (0.076) - this node is a cross-community bridge._
 - **Why does `main()` connect `main` to `test_pep257`, `patch_x500_camera.py`, `ament_pep257_main`, `Copyright Lint Tests`, `Copyright Lint Tests`, `pep257 Lint Tests (relative_state)`, `Copyright Lint Tests`, `test_copyright`?**
-  _High betweenness centrality (0.072) - this node is a cross-community bridge._
+  _High betweenness centrality (0.073) - this node is a cross-community bridge._
 - **Are the 12 inferred relationships involving `Parameters` (e.g. with `QLearning` and `get_discrete_rel_states_from_ros_msg()`) actually correct?**
   _`Parameters` has 12 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `archive_training_results.sh script`, `init_workspaces.sh script`, `kill_vicon.sh script` to the rest of the system?**

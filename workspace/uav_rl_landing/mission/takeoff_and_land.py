@@ -6,10 +6,20 @@ Scripted (non-RL) mission: take off, hold above the hard-coded landing platform
 hand the last stretch to PX4's own AUTO.LAND and report how far from the
 platform centre the UAV ended up.
 
+The landing target is taken from the platform's ground-truth /platform/state,
+so moving_platform_node must be running -- configured to hold the platform
+STILL at the spot it was spawned (see the command below), which also keeps
+/platform/state consistent with the real Gazebo model. The hard-coded
+platform_world_x/y is only used to cross-check that (a mismatch is warned
+about, not silently ignored).
+
 Reuses the existing pipeline unchanged: ResetManager publishes the position
 setpoints, landing_controller (position mode) flies them, and /uav/state
-provides feedback. Needs px4_bridge + landing_controller running, but NOT
-relative_state or moving_platform_node -- the platform is static here.
+provides feedback. Needs px4_bridge + landing_controller running (not
+relative_state).
+
+    ros2 run moving_platform moving_platform_node --ros-args \\
+        -p center_x:=5.0 -p center_y:=0.0 -p radius:=0.0 -p angular_speed:=0.0
 
 Run from workspace/uav_rl_landing, with the ROS 2 workspace sourced:
     python3 -m mission.takeoff_and_land
@@ -28,6 +38,7 @@ HANDOFF_ALTITUDE = 0.5     # [m] AGL at which PX4's AUTO.LAND takes over
 LANDING_WAIT = 20.0        # [s] max time to wait for touchdown after handoff
 TOUCHDOWN_ALTITUDE = 0.3   # [m] AGL below which we count the UAV as landed
 DESCENT_PERIOD = 0.1       # [s] between descending setpoint updates
+PLATFORM_TIMEOUT = 10.0    # [s] max wait for /platform/state
 
 
 def main():
@@ -48,9 +59,49 @@ def main():
         log("Waiting for /uav/state (is px4_bridge running?)...")
         spin_for(1.0)
 
-    pose = reset.generate_initial_pose()
-    log(f"Platform (Gazebo ENU) = ({sim.platform_world_x}, {sim.platform_world_y}) "
-        f"-> PX4 local NED target = ({pose['x']}, {pose['y']}), hover {pose['z']} m")
+    start = time.time()
+    while reset._platform_state is None:
+        if time.time() - start > PLATFORM_TIMEOUT:
+            log("No /platform/state received -- start moving_platform_node "
+                "(static, see this file's docstring). Aborting.")
+            rclpy.shutdown()
+            return
+        log("Waiting for /platform/state (is moving_platform_node running?)...")
+        spin_for(1.0)
+
+    # Refuse to fly at a target we can't trust. Give DDS discovery a moment so
+    # a second publisher (typically a stale moving_platform_node from an
+    # earlier run, still publishing its own trajectory on the same topic)
+    # is actually counted before we decide.
+    spin_for(1.0)
+    plat = reset._platform_state
+    problems = []
+    n_publishers = node.count_publishers("/platform/state")
+    if n_publishers > 1:
+        problems.append(
+            f"{n_publishers} nodes are publishing /platform/state (expected 1) -- almost "
+            "certainly a stale moving_platform_node from an earlier run; kill it "
+            "(pkill -f moving_platform_node) and start a single static one")
+    if plat.vx != 0.0 or plat.vy != 0.0:
+        problems.append(
+            f"the platform is reported moving (v=({plat.vx:.2f}, {plat.vy:.2f}) m/s); start "
+            "moving_platform_node with radius:=0.0 angular_speed:=0.0")
+    if np.hypot(plat.x - sim.platform_world_x, plat.y - sim.platform_world_y) > 0.1:
+        problems.append(
+            f"/platform/state says ({plat.x:.2f}, {plat.y:.2f}) but the configured platform "
+            f"location is ({sim.platform_world_x}, {sim.platform_world_y}) -- make the node's "
+            "center_x/center_y (and the Gazebo spawn -x/-y) agree")
+    if problems:
+        for problem in problems:
+            log(f"ABORTING, not taking off: {problem}.")
+        node.destroy_node()
+        rclpy.shutdown()
+        return
+
+    north, east = reset.platform_position_local(plat.x, plat.y)
+    pose = {"x": float(north), "y": float(east), "z": float(sim.init_altitude)}
+    log(f"Platform (Gazebo ENU) = ({plat.x:.2f}, {plat.y:.2f}) "
+        f"-> PX4 local NED target = ({pose['x']:.2f}, {pose['y']:.2f}), hover {pose['z']} m")
 
     # 1. Take off and hold above the platform.
     reset.start_takeoff(pose)
