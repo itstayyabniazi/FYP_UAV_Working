@@ -846,10 +846,10 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "workspace/ros2_ws/src/vision_node/vision_node/aruco_landing_target_node.py": {
-    "mtime": 1785216445.6554098,
-    "seen": 1789810337.3571289,
-    "ast_hash": "ada72056073674b6793bb031331d7f9c",
-    "semantic_hash": "ada72056073674b6793bb031331d7f9c"
+    "mtime": 1789828120.780439,
+    "seen": 1789828540.971695,
+    "ast_hash": "d8b70d610bae7be791712b9c7d9e7dbe",
+    "semantic_hash": ""
   },
   "workspace/ros2_ws/src/vision_node/vision_node/vision_relative_state_node.py": {
     "mtime": 1785056142.4452536,
@@ -930,9 +930,9 @@
     "semantic_hash": "3caed707587cf0e3f501e15d478f6ca8"
   },
   "README.md": {
-    "mtime": 1789821008.2737992,
-    "seen": 1789821020.826375,
-    "ast_hash": "c1c45cd3f375c4a9754da729c0bb890d",
+    "mtime": 1789828527.1675572,
+    "seen": 1789828540.9717374,
+    "ast_hash": "8eb43730a89a1f1dd164983ced915d49",
     "semantic_hash": ""
   },
   "docker/docker-compose.yml": {
@@ -1104,9 +1104,9 @@
     "semantic_hash": "af11afd4856900301942d91e9aa5a47d"
   },
   "workspace/ros2_ws/src/vision_node/README.md": {
-    "mtime": 1789821008.273989,
-    "seen": 1789821020.826407,
-    "ast_hash": "7d4856dcf39ba63bcb71addbb63fc666",
+    "mtime": 1789828120.7802544,
+    "seen": 1789828540.9718,
+    "ast_hash": "e343a4ab2bf0e639948445cd359da5f0",
     "semantic_hash": ""
   },
   "workspace/uav_rl_landing/README.md": {
@@ -1134,27 +1134,21 @@
     "semantic_hash": ""
   },
   "workspace/uav_rl_landing/mission/ros_io.py": {
-    "mtime": 1789821008.2784338,
-    "seen": 1789821020.8263655,
-    "ast_hash": "6f5598c46b813b6d2bb1849f688f1f91",
-    "semantic_hash": ""
-  },
-  "workspace/uav_rl_landing/mission/vision_frame_check.py": {
-    "mtime": 1789821008.2785366,
-    "seen": 1789821020.8263688,
-    "ast_hash": "7c0b5a062b065125b50cad334551a7a3",
+    "mtime": 1789828120.780562,
+    "seen": 1789828540.9717238,
+    "ast_hash": "6220c4916efa147fd0e4086120c52251",
     "semantic_hash": ""
   },
   "workspace/uav_rl_landing/mission/vision_landing.py": {
-    "mtime": 1789821008.2786672,
-    "seen": 1789821020.8263698,
-    "ast_hash": "b0f257ee000bc84974f9248644728cdc",
+    "mtime": 1789828120.7807148,
+    "seen": 1789828540.9717288,
+    "ast_hash": "5015b0260c222aeb1b63a478b9475d81",
     "semantic_hash": ""
   },
   "workspace/uav_rl_landing/mission/vision_landing_main.py": {
-    "mtime": 1789821008.278745,
-    "seen": 1789821020.826371,
-    "ast_hash": "769e811b7990e46db7562a0e904fac40",
+    "mtime": 1789828120.780796,
+    "seen": 1789828540.9717312,
+    "ast_hash": "c89527ba3cfdd123d1e5c1bb7d4365b5",
     "semantic_hash": ""
   }
 }
