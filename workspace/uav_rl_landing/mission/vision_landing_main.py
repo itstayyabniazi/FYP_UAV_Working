@@ -46,6 +46,10 @@ def main():
     parser.add_argument("--altitude", type=float, default=defaults.search_altitude,
                         help="patrol altitude in metres (default %(default)s; the 0.5 m marker "
                              "gets small above ~6 m)")
+    parser.add_argument("--camera-latency", type=float, default=None, metavar="SECONDS",
+                        help="delay from image capture to detection (default 0.35). The camera measurement is this old "
+                             "when it arrives; the estimate uses where the UAV WAS then. Measure yours with "
+                             "python3 -m mission.measure_camera_latency")
     parser.add_argument("--no-ground-truth", action="store_true",
                         help="don't cross-check the camera against parameters.py's platform location "
                              "(use when you moved the platform without updating it). By default the "
@@ -54,6 +58,9 @@ def main():
     args = parser.parse_args()
 
     io = RosMissionIO()
+    if args.camera_latency is not None:
+        io.camera_latency = args.camera_latency
+    io.log(f"Camera latency compensation: {io.camera_latency:.2f} s")
     if not io.preflight():
         io.node.destroy_node()
         rclpy.shutdown()

@@ -71,9 +71,20 @@ class VisionLandingConfig:
     # Only for logging a comparison at the end / a sanity warning on first
     # sight (sim ground truth). NEVER used to steer.
     expected_xy: Optional[Tuple[float, float]] = None
+    mismatch_tolerance: float = 1.0  # [m] camera vs ground truth disagreement that aborts the mission
+    telemetry_stale_timeout: float = 2.0  # [s] no /uav/state this long -- abort instead of commanding a dead sim
 
 
 class MissionTimeout(Exception):
+    pass
+
+
+class TelemetryStalled(Exception):
+    """No fresh /uav/state for too long -- almost always a crashed or hung PX4/Gazebo, not a normal
+    "nothing changed this tick" (which still produces fresh, merely unchanged-in-value messages).
+    Raised instead of blindly continuing to command a simulator that has already stopped responding --
+    a real crash was once masked for ~25 s (identical logged position/altitude every 5 s) before the
+    process actually died, needlessly hammering a simulator that was already gone."""
     pass
 
 
@@ -94,6 +105,12 @@ class VisionLander:
     def _check_timeout(self):
         if self.io.now() - self._t0 > self.cfg.mission_timeout:
             raise MissionTimeout()
+        # getattr: the offline fake world (tests/fake_world.py) has no telemetry to go stale, and correctly
+        # has no telemetry_stale() method -- treat that as "never stale" rather than requiring every test
+        # double to implement a watchdog concept that doesn't apply to it.
+        is_stale = getattr(self.io, "telemetry_stale", None)
+        if is_stale is not None and is_stale(self.cfg.telemetry_stale_timeout):
+            raise TelemetryStalled()
 
     def _step(self, tx, ty, talt, hspeed, vspeed):
         """Slide the setpoint toward the target by one control period (a plain
@@ -143,6 +160,14 @@ class VisionLander:
 
     def _seen(self):
         return self.io.confirmed(self.cfg.confirm_count, self.cfg.confirm_window)
+
+    def _expected_now(self):
+        """Sim ground truth for where the marker is right now (evaluation only,
+        never used to steer), or None. A moving platform overrides this."""
+        return self.cfg.expected_xy
+
+    def _on_airborne(self):
+        """Called once at search altitude, before the patrol starts."""
 
     def _patrol(self):
         """Fly the corners in order, hovering `dwell_time` at each; return
@@ -221,10 +246,10 @@ class VisionLander:
                      f"[{rel[3]} detections]; marker estimated at NED ({est[0]:.2f}, {est[1]:.2f})")
         else:
             self.log(f"  marker estimated at NED ({est[0]:.2f}, {est[1]:.2f})")
-        expected = self.cfg.expected_xy
+        expected = self._expected_now()
         if expected is not None:
             error = math.hypot(est[0] - expected[0], est[1] - expected[1])
-            if error <= 1.0:
+            if error <= self.cfg.mismatch_tolerance:
                 self.log(f"  sim ground truth ({expected[0]:.2f}, {expected[1]:.2f}): "
                          f"estimate {error:.2f} m off -- OK (camera axes/signs check out)")
             else:
@@ -310,6 +335,7 @@ class VisionLander:
                     outcome = "TAKEOFF_FAILED"
                     break
             else:
+                self._on_airborne()
                 state = "PATROL"
                 while state not in ("FINAL", "NOT_FOUND", "MISMATCH"):
                     state = {"PATROL": self._patrol, "TRACK": self._track,
@@ -321,14 +347,20 @@ class VisionLander:
         except MissionTimeout:
             outcome = "TIMEOUT"
             self.log(f"Mission timeout ({cfg.mission_timeout:.0f} s) -- landing here.")
+        except TelemetryStalled:
+            outcome = "TELEMETRY_STALLED"
+            self.log(f"No /uav/state for {cfg.telemetry_stale_timeout:.0f} s -- PX4/Gazebo likely crashed or "
+                     "hung. Stopping here rather than continuing to command it; a land attempt below is "
+                     "best-effort and may not do anything if the simulator is actually gone.")
 
         self.log("LAND: handing over to PX4 AUTO.LAND.")
         self.io.land()
-        fx, fy, falt = self.io.wait_landed(timeout=30.0)
+        fx, fy, falt = self.io.wait_landed(timeout=10.0 if outcome == "TELEMETRY_STALLED" else 30.0)
         summary = {"outcome": outcome, "final_xy": (fx, fy), "final_altitude": falt,
                    "marker_estimate": self.target}
         if self.target is not None:
             summary["error_to_estimate"] = math.hypot(fx - self.target[0], fy - self.target[1])
-        if cfg.expected_xy is not None:
-            summary["error_to_ground_truth"] = math.hypot(fx - cfg.expected_xy[0], fy - cfg.expected_xy[1])
+        expected = self._expected_now()
+        if expected is not None:
+            summary["error_to_ground_truth"] = math.hypot(fx - expected[0], fy - expected[1])
         return summary
