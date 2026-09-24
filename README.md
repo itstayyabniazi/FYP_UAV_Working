@@ -86,7 +86,7 @@ node-by-node launch sequence.
 |---|---|---|
 | **1** | Take off and land on a **static platform whose coordinates are hard-coded** in the code | **Completed** (verified in simulation) |
 | **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | **Completed** (verified in simulation) — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform-completed) |
-| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Next** — see [§3.3](#33-phase-3--landing-on-a-moving-platform-next) |
+| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Linear completed** (verified in simulation, 4/4 landings), circular not started; see [§3.3](#33-phase-3--landing-on-a-moving-platform-linear-motion-completed) |
 | 4+ | RL-controlled approach (the Q-learning work in §3.4), real hardware | Not started |
 
 ### 3.1 Phase 1 — takeoff and landing on hard-coded platform coordinates (completed)
@@ -168,26 +168,79 @@ What was learned building it (worth knowing before Phase 3):
 - `aruco_landing_target_node` falls back to the ideal pinhole intrinsics for the 80° FOV if no
   `camera_info` arrives within 2 s (it logs a warning), because a silent wait made it publish nothing.
 
-### 3.3 Phase 3 — landing on a moving platform (next)
+### 3.3 Phase 3 — landing on a moving platform (linear motion completed)
 
 Goal: the same take-off → find-by-camera → land sequence, but the platform is **moving**, with two motion
-types: **linear** and **circular**.
+types: **linear** and **circular**. Done in this order — linear first.
 
-What already exists: `moving_platform_node` drives the Gazebo platform along a **circle** (radius,
-angular speed and centre are ROS parameters; default 1.5 m at 0.3 rad/s ≈ 0.45 m/s) and publishes the
-analytic ground truth on `/platform/state`. What is still missing or will need to change:
-- **Linear motion** does not exist yet — needs a linear mode in `moving_platform_node` (constant-velocity
-  or back-and-forth along a line), spawned/driven consistently with its ground truth.
-- **The Phase 2 landing logic assumes a static marker.** It averages *absolute* marker positions,
-  descends toward a frozen estimate below 1 m (where the marker leaves the camera's view), and hands off
-  to `AUTO.LAND` at a fixed x/y. For a moving platform it must instead estimate the marker's velocity,
-  lead it, keep following it all the way down, and land with matched velocity.
-- **The search:** a fixed patrol may never meet a moving target; the search/acquire logic needs a rethink.
-- **Known open issues to fix on the way:** `relative_state_node` subtracts an ENU platform position from
-  an NED UAV position (swapped axes in the ground-truth observation); the Gazebo platform is driven
-  open-loop and can drift from its analytic ground truth; there is no contact sensor.
+**Linear motion: completed and verified in real PX4 SITL + Gazebo Harmonic — 4/4 landings, 0.02–0.08 m
+touchdown accuracy against what the camera actually tracked** (platform anchored to the B→C patrol leg,
+0.3 m/s, 6 m back-and-forth — see the run commands below). Getting here took several real-Gazebo debugging
+rounds, documented in full further down: a camera-latency bug that stalled the lock for ~90 s, a Gazebo/ODE
+physics crash unrelated to this code, a platform escaping the patrol's one-shot search, and a real-time-factor
+mismatch that made several landings look like misses when they weren't. The mission now detects that last
+one itself mid-run and flags its own final verdict as unreliable when it happens, rather than requiring it to
+be caught by eye.
 
-No Phase 3 code has been written yet.
+**Implemented:**
+- **Linear platform motion**: `moving_platform_node -p motion:=linear` (start point, heading, speed, optional
+  back-and-forth `travel_length`), plus `wait_for_start` so a run always begins with the platform in the same
+  place. See the [`moving_platform` README](workspace/ros2_ws/src/moving_platform/README.md).
+- **Lock-on and landing**: after the patrol first sees the marker, the drone estimates the platform's velocity
+  (`mission/target_tracker.py`), flies with it in velocity mode (`v_platform + Kp × error`), descends only while
+  aligned, predicts through the last blind ~1 m, and touches down under velocity matching (contact detected, then
+  `AUTO.LAND` only disarms)
+  (`mission/moving_landing.py`, entry point `python3 -m mission.moving_landing_main --start-platform`; run sequence
+  in the [`vision_node` README](workspace/ros2_ws/src/vision_node/README.md)).
+- **Offline tests**: `cd workspace/uav_rl_landing && python3 -m tests.test_missions` — no ROS needed. Against a fake
+  drone/camera/platform they cover the tracker, the Phase 2 mission, and lock-on landing at 0.2–0.8 m/s, along a
+  second heading, through camera dropouts, and with the platform reversing.
+
+**First Gazebo run and what it found:** the mission finished (`LANDED`), but it took ~90 s to lock on and the
+platform-velocity estimates swung to ±2 m/s for a 0.4 m/s platform. Cause: camera latency (~0.35–0.5 s in Gazebo)
+was uncorrected, so the marker estimate contained `latency × the drone's own velocity`, which fed back through the
+velocity controller. The fake camera had only 0.1 s of latency, which hid it; the offline tests now use 0.4 s and
+reproduce the failure without compensation. Fixed by using the UAV position from the moment of capture
+(`camera_latency`, default 0.35 s, measurable with `mission/measure_camera_latency.py`), a command
+acceleration limit, a lock timeout, and judging detection freshness by arrival time. The run also reported a 4.8 m
+"miss" that was a simulation-speed artefact (real-time factor < 1 vs a wall-clock ground truth); the platform node
+can now run on sim time. Details in the `vision_node` README. **The fixed version has not yet been re-run in Gazebo.**
+
+**Second Gazebo run** (0.4 m/s, latency compensation on): locked in ~5 s, descended smoothly and landed. The
+"MISSED, 1.24 m" it printed was the simulation-speed artefact above (real-time factor ≈ 0.91), not a miss. Before
+speeding the platform up, the touchdown was changed from an `AUTO.LAND` hand-off (0.25 m of drift at 0.4 m/s, ~0.6 m at
+1 m/s in the offline tests) to velocity-matched contact (~0.1 m at 0.4–1.0 m/s).
+
+**Third Gazebo run: a faster platform (1.0 m/s) drove straight out of the patrol square and was never found.**
+Root cause, confirmed by fixing a matching blind spot in the offline tests: those tests assumed a ~2 s takeoff to
+search altitude, when a real Gazebo takeoff takes ~9 s (seen in an actual log). A one-way platform is,
+**at any speed**, fundamentally at the mercy of exactly how long that unpredictable real-world delay turns out to
+be — the patrol only searches its square once, and a few seconds of jitter is enough for a one-way platform to
+already be gone by the time the drone gets there. Re-timing the offline tests to the real ~9 s takeoff reproduced
+the failure directly (offline "successes" the previous README text recommended, e.g. 1.0 m/s from 8 m behind the
+square, now fail the same way). The actual fix is not a better-guessed number: **anchor the platform's
+back-and-forth motion to a patrol leg's own fixed coordinate** (e.g. the B→C leg is `east = 9`), so the platform
+can never end up outside the patrol's reach, independent of timing. Verified across a spread of simulated start-up
+delays (`tests/test_missions.py`'s `run_moving_jitter`): 16/16 landed anchored to the B→C leg at 0.3 m/s, 14/16
+anchored to the A→B leg. Exact commands in the [`vision_node` README](workspace/ros2_ws/src/vision_node/README.md).
+**Not yet re-run in Gazebo.**
+
+**Known limits (from the offline tests, now with realistic takeoff timing):** the last ~1 m is blind (the marker
+leaves the camera's view), so a platform that *reverses* during that final ~2 s is missed by 1 m or more — about
+1 in 5 reversal phases in the fake world (down from about half, because the now-longer overall mission overlaps a
+reversal near touchdown more often). Anchored motion faster than ~0.3 m/s was tried and found *less* reliable, not
+more (0.5 m/s dropped to 13/20, 0.6 m/s and above failed outright) — the lock-on control loop has its own speed
+limit, not yet raised. A smaller nested marker visible closer to the ground is the intended fix for the blind
+window; the speed limit is unexplored.
+
+**Still to do:** raise the lock-on speed limit (0.3 m/s is validated; 0.6 m/s and above fails outright); **circular**
+motion (the node already produces it, but the constant-velocity tracker will lag on a curve — needs an
+acceleration/turn-rate term); the real-time-factor mismatch that keeps `/platform_state`'s ground truth from
+matching the real model even with `use_sim_time` set (worked around, not fixed — the mission's own final report
+already discounts itself when this happens); nested marker (would shrink the blind final ~1 m of descent, the
+biggest source of missed reversals); and the open issues from earlier phases: `relative_state_node` subtracts
+an ENU platform position from an NED UAV position (swapped axes in the ground-truth observation), and there is
+still no contact sensor (touchdown is inferred from vertical speed, not sensed).
 
 ### 3.4 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
 
