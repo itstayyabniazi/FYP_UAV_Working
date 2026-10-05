@@ -86,7 +86,7 @@ node-by-node launch sequence.
 |---|---|---|
 | **1** | Take off and land on a **static platform whose coordinates are hard-coded** in the code | **Completed** (verified in simulation) |
 | **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | **Completed** (verified in simulation) — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform-completed) |
-| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Linear completed** (verified in simulation, 4/4 landings), circular not started; see [§3.3](#33-phase-3--landing-on-a-moving-platform-linear-motion-completed) |
+| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Linear completed** (verified in simulation, 4/4 landings at 0.3-0.4 m/s; **5 km/h real-Gazebo-validated 3/3 with `--fast`**); **circular implemented, offline-verified at 5 km/h, not yet real-Gazebo-tested at that speed**; see [§3.3](#33-phase-3--landing-on-a-moving-platform-linear-motion-completed) |
 | 4+ | RL-controlled approach (the Q-learning work in §3.4), real hardware | Not started |
 
 ### 3.1 Phase 1 — takeoff and landing on hard-coded platform coordinates (completed)
@@ -233,14 +233,80 @@ more (0.5 m/s dropped to 13/20, 0.6 m/s and above failed outright) — the lock-
 limit, not yet raised. A smaller nested marker visible closer to the ground is the intended fix for the blind
 window; the speed limit is unexplored.
 
-**Still to do:** raise the lock-on speed limit (0.3 m/s is validated; 0.6 m/s and above fails outright); **circular**
-motion (the node already produces it, but the constant-velocity tracker will lag on a curve — needs an
-acceleration/turn-rate term); the real-time-factor mismatch that keeps `/platform_state`'s ground truth from
-matching the real model even with `use_sim_time` set (worked around, not fixed — the mission's own final report
-already discounts itself when this happens); nested marker (would shrink the blind final ~1 m of descent, the
-biggest source of missed reversals); and the open issues from earlier phases: `relative_state_node` subtracts
-an ENU platform position from an NED UAV position (swapped axes in the ground-truth observation), and there is
-still no contact sensor (touchdown is inferred from vertical speed, not sensed).
+**Still to do:** raise the lock-on speed limit (0.3 m/s is validated; 0.6 m/s and above fails outright); run the
+now-implemented circular motion below in real Gazebo (offline-verified only so far); the real-time-factor
+mismatch that keeps `/platform_state`'s ground truth from matching the real model even with `use_sim_time` set
+(worked around, not fixed — the mission's own final report already discounts itself when this happens); nested
+marker (would shrink the blind final ~1 m of descent, the biggest source of missed reversals); and the open
+issues from earlier phases: `relative_state_node` subtracts an ENU platform position from an NED UAV position
+(swapped axes in the ground-truth observation), and there is still no contact sensor (touchdown is inferred
+from vertical speed, not sensed).
+
+**Circular motion: implemented and offline-verified, not yet run in Gazebo.** The mission control loop needed
+no changes — it was never actually aware of the platform's motion shape, only ever consuming the tracker's
+position/velocity estimate. The gap was exactly what the paragraph above used to flag: the tracker's
+prediction, used while the marker is out of view, fit a straight line to recent camera samples, which lags
+behind a curving platform. Fixed with an opt-in constant-turn-rate (CTRV) extrapolation in
+[`target_tracker.py`](workspace/uav_rl_landing/mission/target_tracker.py) (tracks how fast the fitted velocity
+vector's heading is rotating and extrapolates along that arc instead of a tangent line, reducing to the exact
+same straight-line prediction as turn rate → 0) — off by default, so the linear results above are unaffected
+byte-for-byte, turned on by the new
+[`mission/circular_landing_main.py`](workspace/uav_rl_landing/mission/circular_landing_main.py) entry point.
+
+A demo circle (radius 1.5 m, 0.3 rad/s, 0.45 m/s tangential — comparable to the validated 0.3–0.4 m/s linear
+speeds) was sized so the whole circle stays within the camera's detection range of the default patrol leg
+continuously, not just a brief crossing (worst-case offset 2.0 m against a 2.25 m tolerance at the 5 m search
+altitude) — first sighting doesn't depend on timing luck the way the one-way linear case originally did. It
+lands 16/16 across a full revolution of arrival-phase jitter in the offline tests
+(`tests/test_missions.py::test_circular`), and once locked the platform stays inside the camera's visible
+range ~100% of the time above the blind-descent floor, checked directly against the simulated camera's own
+visibility formula, not just inferred from the mission's outcome. What actually stresses the curvature fix
+turned out to be **turn rate, not translational speed** — pushing the platform faster mostly just hits the
+same ~0.4–0.5 m/s control-loop speed ceiling as the linear case, regardless of tracker. Holding speed at the
+validated ~0.4 m/s but tightening the radius (1.0 m, 0.4 rad/s — a faster-rotating heading at the same speed)
+makes the fix's effect explicit: 0/12 landed with the plain straight-line tracker, 12/12 with the
+curvature-aware one, across the same phase sweep. Full write-up, exact launch commands and the containment
+arithmetic: [`vision_node` README, "Phase 3b"](workspace/ros2_ws/src/vision_node/README.md).
+
+**Follow-up from three real-Gazebo rounds.** Pushed past the demo circle to 1.2 m/s, the first real run exposed a
+genuine bug (the reversal detector fired on ordinary curvature at that turn rate, not just real reversals —
+fixed) and a genuine ceiling (the control law itself, not tracking accuracy, tops out around 0.8–1.0 m/s
+regardless of motion shape — confirmed with a perfect-tracker isolation test). This matters because the
+real-hardware target (landing on a moving car's roof) needs a minimum of **5 km/h = 1.39 m/s**. A second,
+higher-bandwidth gain profile (`--fast`) closed that gap. Retested in Gazebo: the original 1.2 m/s failure now
+lands correctly, and 0.8/1.0 m/s land cleanly with a real measured camera latency (0.09 s) — 0.06 m and 0.18 m
+accuracy. 5 km/h itself first failed to converge (fixed offline by loosening alignment hysteresis, tuned for a
+less noisy regime), then, retested a third time, **the drone crashed** — `TELEMETRY_STALLED` right after the
+tracker reported a platform velocity of ~3 m/s for a platform whose real max speed is 1.39 m/s. Real bug, not
+a tuning gap: the tracker's velocity-estimate clip was the same field as the UAV's own flight-speed authority,
+so raising the UAV's speed for `--fast` also raised the ceiling on how implausible an estimate the control loop
+would trust as feedforward — a genuine flight-safety issue the offline test harness's simplified drone model
+has no way to catch. Fixed by decoupling the two (a new `tracker_max_speed` field, independent of the UAV's own
+`max_speed`) — confirmed offline that the old code let a bad estimate reach 3.3–4.0 m/s under noise, the fix
+holds it at 2.5 m/s every time, with no regression to the 10/10 landing rate. A separate finding along the way:
+what matters isn't just calibration accuracy but a *low absolute* camera latency — a 0.4 s latency fails at
+5 km/h even perfectly calibrated, while this session's own measured 0.09 s is comfortably fine. **5 km/h with
+the safety fix has not yet been retried in Gazebo** — only 0.8/1.0 m/s and the crashed attempt have real
+hardware-in-the-loop evidence. Full write-up and the exact numbers: [`vision_node` README, "Real-Gazebo
+follow-up"](workspace/ros2_ws/src/vision_node/README.md).
+
+**5 km/h on LINEAR (back-and-forth) motion: real-Gazebo validated, 3/3.** `--fast` was also pushed onto the
+original straight-line Phase 3 platform (same script, `--no-curvature` and `motion:=linear`), since the
+real-hardware target is a car driving in roughly a line, not a circle. This surfaced a different real bug than
+circular motion's: `linear_state`'s back-and-forth motion reverses velocity *instantly* at each end of travel,
+and if that reversal lands near the final blind descent or the moment of contact, the control loop works off a
+stale estimate for a moment — confirmed with an instrumented offline trace showing tracking error oscillating
+between near-zero and 3–5 m every half-period. At a short travel distance (6–10 m) this starved the mission of
+any sustained "locked long enough to descend" window. Fix: lengthen the back-and-forth leg (`travel_length=50`
+m, so a reversal is rare relative to the ~70–90 s a lock-to-touchdown sequence actually takes) — offline 10/10
+at 1.39 m/s with the real measured 0.09 s latency, and **confirmed in real PX4 SITL + Gazebo Harmonic: 3/3
+landed** by the trustworthy metric (0.09, 0.49, 0.04 m from the predicted platform position, all well under
+the 0.75 m half-width). True one-way (non-reversing) motion was tried first and does not work with this
+project's patrol design at any distance tested (confirmed offline up to 100 m): patrol speed is only 0.11 m/s
+faster than the platform, so once the platform has any head start the patrol can never close the gap — a
+bounded, rarely-reversing leg is what actually works. Full write-up and exact commands:
+[`circular_landing_main.py`'s docstring](workspace/uav_rl_landing/mission/circular_landing_main.py) (the script
+is motion-agnostic despite the name).
 
 ### 3.4 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
 
@@ -275,6 +341,39 @@ still no contact sensor (touchdown is inferred from vertical speed, not sensed).
   deployment (landing on an actual moving car, not just a Gazebo box) — see
   `workspace/ros2_ws/src/vision_node/README.md`. Training still uses ground truth; this is the
   demo/deployment path.
+
+### 3.5 Flight speed reference (drone & platform)
+
+Speeds referenced throughout §3 above, gathered in one place. All are configured defaults, not
+hard limits — every one is a dataclass field or ROS 2 parameter and can be overridden without
+touching this table.
+
+**Drone.** There's no single speed — it's per phase, set in
+[`config/parameters.py`](workspace/uav_rl_landing/config/parameters.py) and
+[`mission/vision_landing.py`](workspace/uav_rl_landing/mission/vision_landing.py):
+
+| Phase | Speed | Where |
+|---|---|---|
+| RL descent (forward/relative velocity) | max 1.5 m/s, steps of 0.15 m/s | `action_max_values["vx"]` |
+| RL descent (vertical) | constant 0.35 m/s down | `initial_action_values["vz"]` |
+| Vision-mission patrol/search | 1.5 m/s | `search_speed` |
+| Vision-mission climb | 1.0 m/s | `climb_speed` |
+| Vision-mission approach to marker | 1.5 m/s | `approach_speed` |
+| Vision-mission final descent | 0.35 m/s | `descent_rate` |
+
+So in the air the drone moves at roughly 1–1.5 m/s horizontally and descends at 0.35 m/s.
+
+**Moving platform.** Set in
+[`moving_platform_node.py`](workspace/ros2_ws/src/moving_platform/moving_platform/moving_platform_node.py)
+as ROS 2 parameters:
+
+| Motion | Speed | Parameter |
+|---|---|---|
+| Linear (Phase 3, completed) | 0.3–0.4 m/s validated with default gains (0.5 m/s and above degrades lock-on); **1.39 m/s (5 km/h) real-Gazebo-validated (3/3) with `--fast` + `travel_length=50`** -- see §3.3 | `speed` (default 0.4 m/s), `travel_length` |
+| Circular (Phase 3, offline-verified, not yet run in Gazebo at 5 km/h) | tangential speed = `radius` × `angular_speed`, e.g. 0.45 m/s at the demo 1.5 m / 0.3 rad/s; 1.39 m/s offline-validated with `--fast`, not yet real-Gazebo-tested at that speed | `radius`, `angular_speed` (default 0.3 rad/s) |
+
+In every case the drone's own speed (1–1.5 m/s) is several times the platform's, which is what
+makes lock-on tracking (`v_platform + Kp × error`) able to close the gap at all.
 
 ## 4. What's left to be done
 

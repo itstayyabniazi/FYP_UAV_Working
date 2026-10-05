@@ -28,6 +28,7 @@ ros_gz_bridge service bridge for /world/<world>/set_pose) if that turns out
 to matter in practice.
 """
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -87,6 +88,25 @@ class MovingPlatformNode(Node):
         # (center_x + radius, center_y, z) (t=0's position) before starting
         # this node, and start this node soon after, so the two agree from
         # then on. See the package README for the exact spawn command.
+        #
+        # With -p use_sim_time:=true, self._now() reads the ROS sim clock, which
+        # reports exactly 0 until this node's (automatic) /clock subscription has
+        # actually received its first message -- a real race against rclpy's own
+        # discovery/delivery, not something terminal launch ORDER reliably avoids
+        # (bridging /clock first and confirming it with `ros2 topic echo` only
+        # guarantees /clock is being PUBLISHED, not that THIS node's subscription
+        # has received one by the time this line runs). Capturing start_time=0
+        # here is silent: every publish_platform() tick keeps computing t=0 (the
+        # platform looks frozen, but still commands a real nonzero Twist -- the
+        # single t=0 velocity, repeated) until /clock's first message arrives, at
+        # which point t jumps straight to however much sim time has already
+        # elapsed system-wide, snapping the analytic trajectory (and the ACTUAL
+        # velocity commanded to the real Gazebo model) to a discontinuous new
+        # point instead of starting smoothly at (center_x+radius, center_y).
+        # Wait for the clock to actually be reporting real time first -- for
+        # wall time (the default, validated path) self._now() is already
+        # nonzero essentially instantly, so this returns on its first check.
+        self._wait_for_valid_clock()
         self.start_time = self._now()
 
         self.create_subscription(Empty, "/moving_platform/start", self._on_start, 10)
@@ -114,9 +134,42 @@ class MovingPlatformNode(Node):
         -- e.g. 10% at RTF 0.9 = 4.8 m after two minutes at 0.4 m/s."""
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def _wait_for_valid_clock(self, timeout_sec=5.0):
+        """Block briefly until self._now() is reporting real time, not an as-yet-uninitialized sim
+        clock stuck at exactly 0 (see the __init__ comment above this method's call site for why
+        that matters -- capturing start_time=0 here corrupts both the published ground truth and
+        the actual velocity commanded to the real Gazebo model). A no-op in practice for the
+        default wall-clock case: self._now() is already nonzero on the very first check there, so
+        this returns immediately. Only called from __init__, before rclpy.spin(node) starts in
+        main() and before any of this node's own subscriptions/timers exist yet, so a recursive
+        spin_once here is safe -- NOT reused from _on_start() below, which runs INSIDE an already
+        -spinning executor callback, where a nested spin_once could re-enter unsafely."""
+        deadline = time.monotonic() + timeout_sec
+        while self._now() <= 0.0 and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        if self._now() <= 0.0:
+            self.get_logger().warn(
+                f"Clock still reads 0 after waiting {timeout_sec:.0f}s at startup. If -p "
+                "use_sim_time:=true was passed: confirm /clock is bridged and actually publishing "
+                "BEFORE this node starts (`ros2 topic echo /clock --once` should print a nonzero "
+                "time), and that something is actually delivering it here "
+                "(`ros2 topic info /clock -v` should show this node as a subscriber). Proceeding "
+                "anyway -- the trajectory will start from whatever t this ends up computing.")
+
     def _on_start(self, _msg):
         if not self.moving:
             self.moving = True
+            if self._now() <= 0.0:
+                # Same clock-not-yet-valid risk as __init__'s _wait_for_valid_clock(), but this
+                # callback is already running inside rclpy's spinning executor -- a recursive
+                # spin_once() here could re-enter unsafely, so warn instead of blocking. In
+                # practice this path matters only if /clock stopped being delivered well after
+                # startup (a persistent bridge problem), since __init__ already waited for the
+                # first valid reading before this subscription was even created.
+                self.get_logger().warn(
+                    "Clock still reads 0 -- the trajectory is about to start from t=0 (or jump "
+                    "once the clock recovers) instead of a clean start. Check /clock (see the "
+                    "startup warning above, or `ros2 topic info /clock -v`).")
             self.start_time = self._now()
             self.get_logger().info("Start received -- platform is now moving.")
 
