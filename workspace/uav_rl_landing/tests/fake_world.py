@@ -43,6 +43,11 @@ class FakeWorld:
         self.pending = []
         self.history = deque(maxlen=200)                 # (t, n, e, alt)
         self.velocity_commands = 0
+        # Every camera tick, regardless of whether it produced a detection -- (t, alt, dn, de,
+        # visible), dn/de the platform-minus-UAV offset used by the visibility check below. Lets
+        # a test assert directly on "was the platform in the camera's window" over a whole run,
+        # not just infer it from the mission's outcome.
+        self.footprint_log = []
 
     # -- platform ---------------------------------------------------------
 
@@ -170,13 +175,15 @@ class FakeWorld:
         return tuple(self.p)
 
     def _camera(self):
-        if self.dropout and self.dropout[0] <= self.t <= self.dropout[1]:
-            return
         tc = self.t - self.latency
         un, ue, ualt = self._uav_at(tc)
         pn, pe, _, _ = self.platform_ned(tc)
         dn, de = pn - un, pe - ue
-        if not (0.7 < ualt <= 7.0 and abs(dn) <= 0.63 * ualt - 0.25 and abs(de) <= 0.50 * ualt - 0.25):
+        visible = 0.7 < ualt <= 7.0 and abs(dn) <= 0.63 * ualt - 0.25 and abs(de) <= 0.50 * ualt - 0.25
+        self.footprint_log.append((self.t, ualt, dn, de, visible))
+        if self.dropout and self.dropout[0] <= self.t <= self.dropout[1]:
+            return
+        if not visible:
             return
         rel_n = (-dn if self.flip_north else dn) + random.gauss(0, self.noise)
         rel_e = de + random.gauss(0, self.noise)

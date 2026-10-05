@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="landmark_post">
+    <!-- Purely a visual reference marker -- static so it needs no plugin, no
+         inertia, and can never be pushed/drift like the moving_platform model
+         can. Short (0.6 m) and thin (0.08 m radius): tall enough to read
+         clearly from the Gazebo GUI's default chase/orbit view and from the
+         UAV's downward camera at altitude, short enough to sit well clear of
+         the UAV's flight envelope even directly overhead (patrol/search is
+         flown at several metres; the blind final descent floor is ~1 m). -->
+    <static>true</static>
+
+    <link name="link">
+      <pose>0 0 0.3 0 0 0</pose>
+
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.08</radius>
+            <length>0.2</length>
+          </cylinder>
+        </geometry>
+      </collision>
+
+      <visual name="post">
+        <geometry>
+          <cylinder>
+            <radius>0.08</radius>
+            <length>0.2</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <!-- bright orange: reads clearly against the default grey/white ground -->
+          <ambient>1.0 0.35 0.0 1</ambient>
+          <diffuse>1.0 0.35 0.0 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- A brighter cap on top makes the post's position easy to pick out from
+           directly overhead (the UAV's own view during patrol), not just from
+           the side. -->
+      <visual name="cap">
+        <pose>0 0 0.31 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.02</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>1.0 1.0 0.0 1</ambient>
+          <diffuse>1.0 1.0 0.0 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

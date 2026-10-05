@@ -58,7 +58,18 @@ class MovingLandingConfig(VisionLandingConfig):
     mismatch_tolerance: float = 2.0  # [m]
     kp: float = 1.0                  # [1/s] position error -> velocity correction
     kz: float = 1.0                  # [1/s] altitude error -> vertical velocity
-    max_speed: float = 2.5           # [m/s] horizontal velocity command limit
+    max_speed: float = 2.5           # [m/s] horizontal velocity command limit -- the UAV's OWN flight authority
+    # The tracker's own velocity-ESTIMATE clip, separate from max_speed above. These used to be the
+    # same field (TargetTracker was constructed with max_speed directly) -- harmless while both were
+    # small, but once max_speed is raised well past the platform's real speed (e.g. --fast's 4.0 m/s
+    # for a 1.39 m/s platform, so the UAV has spare authority to catch up), a noisy/bad camera fit
+    # can report a velocity up to max_speed as "the platform's velocity", nowhere near physically
+    # plausible for this platform, and the control loop trusts it directly as feedforward
+    # (cmd = state.vx + kp*error). A real PX4-controlled vehicle chasing that bad estimate is a real
+    # flight-safety risk, not just a bad landing -- confirmed by a real Gazebo crash immediately
+    # after the tracker reported ~3 m/s for a platform that never exceeds ~1.4-2 m/s. Keep this near
+    # the platform's actual expected speed with headroom for noise, well below max_speed.
+    tracker_max_speed: float = 2.5   # [m/s] tracker velocity-estimate clip -- keep near the REAL platform speed
     # Limits how fast the velocity COMMAND may change. The camera estimate of the platform's velocity is
     # contaminated by (latency error) x (the UAV's own acceleration); capping the acceleration bounds that bias,
     # which is what keeps a slightly wrong camera_latency from destabilising the lock.
@@ -78,6 +89,12 @@ class MovingLandingConfig(VisionLandingConfig):
     max_extrapolation: float = 6.0   # [s] how long to keep predicting without a detection
     start_platform: bool = False     # send /moving_platform/start when airborne
     use_ground_truth: bool = True    # cross-check + evaluate against /platform/state (never steers)
+    # Extrapolate the tracker along a turning arc instead of a straight line (see
+    # target_tracker.py's module docstring) -- for a platform moving on a curve (Phase 3
+    # circular motion), not a straight line. Off by default: False reproduces the exact
+    # straight-line extrapolation this (hardware-validated, straight-line) mission was tuned
+    # against, byte for byte.
+    tracker_curvature: bool = False
 
 
 class MovingPlatformLander(VisionLander):
@@ -86,7 +103,7 @@ class MovingPlatformLander(VisionLander):
         super().__init__(io, config or MovingLandingConfig(), log)
         c = self.cfg
         self.tracker = TargetTracker(c.tracker_window, c.tracker_min_samples, c.tracker_min_span,
-                                     c.max_speed, c.max_extrapolation)
+                                     c.tracker_max_speed, c.max_extrapolation, curvature=c.tracker_curvature)
 
     # -- hooks ------------------------------------------------------------
 
