@@ -673,9 +673,9 @@
   },
   "workspace/ros2_ws/src/moving_platform/moving_platform/moving_platform_node.py": {
     "mtime": 1790248836.1646914,
-    "seen": 1791211680.8851573,
+    "seen": 1791972464.470825,
     "ast_hash": "9accc18df9787368e135af9755498c9c",
-    "semantic_hash": ""
+    "semantic_hash": "9accc18df9787368e135af9755498c9c"
   },
   "workspace/ros2_ws/src/moving_platform/scripts/generate_aruco_marker.py": {
     "mtime": 1785056142.4423661,
@@ -847,9 +847,9 @@
   },
   "workspace/ros2_ws/src/vision_node/vision_node/aruco_landing_target_node.py": {
     "mtime": 1789828120.780439,
-    "seen": 1789828540.971695,
+    "seen": 1791972464.4709196,
     "ast_hash": "d8b70d610bae7be791712b9c7d9e7dbe",
-    "semantic_hash": ""
+    "semantic_hash": "d8b70d610bae7be791712b9c7d9e7dbe"
   },
   "workspace/ros2_ws/src/vision_node/vision_node/vision_relative_state_node.py": {
     "mtime": 1785056142.4452536,
@@ -877,9 +877,9 @@
   },
   "workspace/uav_rl_landing/config/parameters.py": {
     "mtime": 1789818027.5408852,
-    "seen": 1789818814.5621145,
+    "seen": 1791972464.4709392,
     "ast_hash": "0a21d48922db6e4930fd72ecc05dc843",
-    "semantic_hash": ""
+    "semantic_hash": "0a21d48922db6e4930fd72ecc05dc843"
   },
   "workspace/uav_rl_landing/environment/action_manager.py": {
     "mtime": 1784804849.8438458,
@@ -895,9 +895,9 @@
   },
   "workspace/uav_rl_landing/environment/reset_manager.py": {
     "mtime": 1789815958.4537113,
-    "seen": 1789818814.5621247,
+    "seen": 1791972464.4709477,
     "ast_hash": "910e59b5661b5ad73d971345acf6f56d",
-    "semantic_hash": ""
+    "semantic_hash": "910e59b5661b5ad73d971345acf6f56d"
   },
   "workspace/uav_rl_landing/environment/reward.py": {
     "mtime": 1784804849.8448806,
@@ -930,10 +930,10 @@
     "semantic_hash": "3caed707587cf0e3f501e15d478f6ca8"
   },
   "README.md": {
-    "mtime": 1790845112.7871013,
-    "seen": 1791211680.885298,
-    "ast_hash": "ec14d1cd2be2fa52b9fb14f21d800731",
-    "semantic_hash": ""
+    "mtime": 1791972175.5469842,
+    "seen": 1791972464.4710069,
+    "ast_hash": "18c8dc7d97cc697dd0c18a032e6aa9dd",
+    "semantic_hash": "18c8dc7d97cc697dd0c18a032e6aa9dd"
   },
   "docker/docker-compose.yml": {
     "mtime": 1789572773.8548357,
@@ -997,9 +997,9 @@
   },
   "workspace/ros2_ws/src/moving_platform/README.md": {
     "mtime": 1789840494.033005,
-    "seen": 1790242461.1279786,
+    "seen": 1791972464.471013,
     "ast_hash": "0e0071d8fd44d8d55673bdda32570f52",
-    "semantic_hash": ""
+    "semantic_hash": "0e0071d8fd44d8d55673bdda32570f52"
   },
   "workspace/ros2_ws/src/px4_msgs/.github/ISSUE_TEMPLATE/bug_report.yml": {
     "mtime": 1783766974.2958167,
@@ -1105,9 +1105,9 @@
   },
   "workspace/ros2_ws/src/vision_node/README.md": {
     "mtime": 1791211637.275495,
-    "seen": 1791211680.8853726,
+    "seen": 1791972464.4710164,
     "ast_hash": "bfbeb0b99b2d1c8e03be6edc92086b64",
-    "semantic_hash": ""
+    "semantic_hash": "bfbeb0b99b2d1c8e03be6edc92086b64"
   },
   "workspace/uav_rl_landing/README.md": {
     "mtime": 1784815683.6718764,
@@ -1117,92 +1117,98 @@
   },
   "workspace/rl_multi_rotor_landing/rl_multi_rotor_landing_sim/src/training_q_learning/training_results/dummy.txt": {
     "mtime": 1783757898.400726,
-    "seen": 1789811627.2435663,
+    "seen": 1791972464.47101,
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": ""
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   ".githooks/pre-commit": {
     "mtime": 1789811707.812542,
-    "seen": 1789811759.4012744,
+    "seen": 1791972464.4704244,
     "ast_hash": "7129271ed9eb388851929b760dc99df7",
-    "semantic_hash": ""
+    "semantic_hash": "7129271ed9eb388851929b760dc99df7"
   },
   "workspace/uav_rl_landing/mission/takeoff_and_land.py": {
     "mtime": 1789817250.7442768,
-    "seen": 1789818814.5621347,
+    "seen": 1791972464.470976,
     "ast_hash": "107013d7c6b72a09cf193714760a4658",
-    "semantic_hash": ""
+    "semantic_hash": "107013d7c6b72a09cf193714760a4658"
   },
   "workspace/uav_rl_landing/mission/ros_io.py": {
     "mtime": 1790238921.4224427,
-    "seen": 1790242461.1279247,
+    "seen": 1791972464.470973,
     "ast_hash": "ca79937756b6fdaa6a0855e1fd69a677",
-    "semantic_hash": ""
+    "semantic_hash": "ca79937756b6fdaa6a0855e1fd69a677"
   },
   "workspace/uav_rl_landing/mission/vision_landing.py": {
     "mtime": 1790237914.0178282,
-    "seen": 1790242461.1279328,
+    "seen": 1791972464.4709842,
     "ast_hash": "650ccb4980016813b3304d4cc6430a9d",
-    "semantic_hash": ""
+    "semantic_hash": "650ccb4980016813b3304d4cc6430a9d"
   },
   "workspace/uav_rl_landing/mission/vision_landing_main.py": {
     "mtime": 1789840430.9341497,
-    "seen": 1790242461.1279352,
+    "seen": 1791972464.4709873,
     "ast_hash": "eba0558fb6313e57e5b46d65a425477e",
-    "semantic_hash": ""
+    "semantic_hash": "eba0558fb6313e57e5b46d65a425477e"
   },
   "workspace/ros2_ws/src/moving_platform/moving_platform/trajectories.py": {
     "mtime": 1789838057.2900567,
-    "seen": 1790242461.1278102,
+    "seen": 1791972464.470832,
     "ast_hash": "9c9d9c646da53edf7a52c215739af9e0",
-    "semantic_hash": ""
+    "semantic_hash": "9c9d9c646da53edf7a52c215739af9e0"
   },
   "workspace/scripts/run_sim_terminals.sh": {
     "mtime": 1790844302.9578445,
-    "seen": 1791211680.8852363,
+    "seen": 1791972464.4709268,
     "ast_hash": "ac510d74be1280afa51a797630198ba5",
-    "semantic_hash": ""
+    "semantic_hash": "ac510d74be1280afa51a797630198ba5"
   },
   "workspace/uav_rl_landing/mission/measure_camera_latency.py": {
     "mtime": 1789840452.148278,
-    "seen": 1790242461.1279168,
+    "seen": 1791972464.4709632,
     "ast_hash": "2af1d8b1c5a56d1ccb24e8ac0fac17b6",
-    "semantic_hash": ""
+    "semantic_hash": "2af1d8b1c5a56d1ccb24e8ac0fac17b6"
   },
   "workspace/uav_rl_landing/mission/moving_landing.py": {
     "mtime": 1790602950.0388467,
-    "seen": 1791211680.8852715,
+    "seen": 1791972464.4709663,
     "ast_hash": "4ff702998affa135f8fd361638f09c4d",
-    "semantic_hash": ""
+    "semantic_hash": "4ff702998affa135f8fd361638f09c4d"
   },
   "workspace/uav_rl_landing/mission/moving_landing_main.py": {
     "mtime": 1790240994.2915888,
-    "seen": 1790242461.1279216,
+    "seen": 1791972464.4709694,
     "ast_hash": "5ecabba25ae081e5383b11ca1e9443d9",
-    "semantic_hash": ""
+    "semantic_hash": "5ecabba25ae081e5383b11ca1e9443d9"
   },
   "workspace/uav_rl_landing/mission/target_tracker.py": {
     "mtime": 1790254404.6765134,
-    "seen": 1791211680.8852813,
+    "seen": 1791972464.47098,
     "ast_hash": "4f1d0bb159082b1b291d6b473df168bd",
-    "semantic_hash": ""
+    "semantic_hash": "4f1d0bb159082b1b291d6b473df168bd"
   },
   "workspace/uav_rl_landing/tests/fake_world.py": {
     "mtime": 1790245027.5098288,
-    "seen": 1791211680.8852882,
+    "seen": 1791972464.4709902,
     "ast_hash": "6d80f09f69b580dff0b87cd9b4e551ae",
-    "semantic_hash": ""
+    "semantic_hash": "6d80f09f69b580dff0b87cd9b4e551ae"
   },
   "workspace/uav_rl_landing/tests/test_missions.py": {
     "mtime": 1790603119.459986,
-    "seen": 1791211680.8852901,
+    "seen": 1791972464.4709928,
     "ast_hash": "5e8cb37e985e471cb9d4c3d994ef163d",
-    "semantic_hash": ""
+    "semantic_hash": "5e8cb37e985e471cb9d4c3d994ef163d"
   },
   "workspace/uav_rl_landing/mission/circular_landing_main.py": {
     "mtime": 1790845021.6990144,
-    "seen": 1791211680.8852649,
+    "seen": 1791972464.47096,
     "ast_hash": "10a498eccfabea8c2c6bdea9a10ef56e",
-    "semantic_hash": ""
+    "semantic_hash": "10a498eccfabea8c2c6bdea9a10ef56e"
+  },
+  "CLAUDE.md": {
+    "mtime": 1791972224.6044075,
+    "seen": 1791972464.4710028,
+    "ast_hash": "07b613190b84e448d55a096c3f52606b",
+    "semantic_hash": "07b613190b84e448d55a096c3f52606b"
   }
 }

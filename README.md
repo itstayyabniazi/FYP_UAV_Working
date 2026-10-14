@@ -233,8 +233,9 @@ more (0.5 m/s dropped to 13/20, 0.6 m/s and above failed outright) — the lock-
 limit, not yet raised. A smaller nested marker visible closer to the ground is the intended fix for the blind
 window; the speed limit is unexplored.
 
-**Still to do:** raise the lock-on speed limit (0.3 m/s is validated; 0.6 m/s and above fails outright); run the
-now-implemented circular motion below in real Gazebo (offline-verified only so far); the real-time-factor
+**Still to do:** run circular motion at 5 km/h in real Gazebo (the demo speed and 0.8/1.0 m/s are validated; 5 km/h
+is offline-verified only — see below; the lock-on speed limit that used to cap linear motion at 0.3 m/s is now
+raised to 5 km/h by the `--fast` profile, see the linear 5 km/h paragraph below); the real-time-factor
 mismatch that keeps `/platform_state`'s ground truth from matching the real model even with `use_sim_time` set
 (worked around, not fixed — the mission's own final report already discounts itself when this happens); nested
 marker (would shrink the blind final ~1 m of descent, the biggest source of missed reversals); and the open
@@ -242,7 +243,8 @@ issues from earlier phases: `relative_state_node` subtracts an ENU platform posi
 (swapped axes in the ground-truth observation), and there is still no contact sensor (touchdown is inferred
 from vertical speed, not sensed).
 
-**Circular motion: implemented and offline-verified, not yet run in Gazebo.** The mission control loop needed
+**Circular motion: implemented; real-Gazebo-validated at the demo speed (0.45 m/s) and 0.8/1.0 m/s, offline-verified
+only at 5 km/h.** The mission control loop needed
 no changes — it was never actually aware of the platform's motion shape, only ever consuming the tracker's
 position/velocity estimate. The gap was exactly what the paragraph above used to flag: the tracker's
 prediction, used while the marker is out of view, fit a straight line to recent camera samples, which lags
@@ -285,9 +287,10 @@ has no way to catch. Fixed by decoupling the two (a new `tracker_max_speed` fiel
 `max_speed`) — confirmed offline that the old code let a bad estimate reach 3.3–4.0 m/s under noise, the fix
 holds it at 2.5 m/s every time, with no regression to the 10/10 landing rate. A separate finding along the way:
 what matters isn't just calibration accuracy but a *low absolute* camera latency — a 0.4 s latency fails at
-5 km/h even perfectly calibrated, while this session's own measured 0.09 s is comfortably fine. **5 km/h with
-the safety fix has not yet been retried in Gazebo** — only 0.8/1.0 m/s and the crashed attempt have real
-hardware-in-the-loop evidence. Full write-up and the exact numbers: [`vision_node` README, "Real-Gazebo
+5 km/h even perfectly calibrated, while this session's own measured 0.09 s is comfortably fine. **5 km/h on
+*circular* motion with the safety fix has not yet been retried in Gazebo** — only 0.8/1.0 m/s and the crashed
+attempt have real circular-motion evidence (the same safety fix is exercised by every linear 5 km/h run below).
+Full write-up and the exact numbers: [`vision_node` README, "Real-Gazebo
 follow-up"](workspace/ros2_ws/src/vision_node/README.md).
 
 **5 km/h on LINEAR (back-and-forth) motion: real-Gazebo validated, 3/3.** `--fast` was also pushed onto the
@@ -307,6 +310,23 @@ faster than the platform, so once the platform has any head start the patrol can
 bounded, rarely-reversing leg is what actually works. Full write-up and exact commands:
 [`circular_landing_main.py`'s docstring](workspace/uav_rl_landing/mission/circular_landing_main.py) (the script
 is motion-agnostic despite the name).
+
+**Repeat runs while preparing the supervisor demo (two more real-Gazebo findings).** Eight further runs of the
+same 5 km/h linear setup: 6 landed (0.05–0.10 m from the predicted platform position), 1 aborted with a false
+`ESTIMATE_MISMATCH`, 1 was a `TELEMETRY_STALLED` crash. (1) The false abort: the first-detection sanity check
+(`_acquired()` in `vision_landing.py`) compares the camera against `/platform/state`, which is driven by wall-clock
+time and drifts from the real model when Gazebo's real-time factor is not 1 — the longer patrol leg needed for
+`travel_length=50` lets that drift reach ~14 m before the first detection, far past the 2 m tolerance. Not a camera
+error; the camera estimate was fine. Workaround: pass `--no-ground-truth` (the landing logic and the trustworthy
+`Contact at … m from the predicted platform position` line never depended on ground truth). (2) The crash happened
+during PATROL, before any `--fast` tracking code runs, and matches the intermittent Gazebo/PX4 instability this
+project already has on record — it is environmental, not caused by the mission code. One run also hovered at a
+single altitude for over two minutes (platform velocity estimate flipping sign every 5–10 s, far faster than the
+~36 s real reversal period) before still landing accurately; an offline replay at the same noise level never
+reproduced it. The working hypothesis — **not yet confirmed by a run** — is that `moving_platform_node` was running
+on wall-clock time while the real-time factor wandered between 58% and 149%; the recommended default is therefore to
+bridge `/clock` and start the node with `-p use_sim_time:=true` (see the `vision_node` README). Landing accuracy was
+unaffected either way; only smoothness/duration was.
 
 ### 3.4 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
 
