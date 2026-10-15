@@ -453,6 +453,113 @@ an unrelated but similarly-presenting Gazebo/ODE physics crash), and watch the t
 `platform (...)` velocity numbers during the run -- they should now never exceed ~2.5 m/s for this
 platform; if one does, that's a sign something is still wrong, not noise.
 
+## Phase 3c quick path: landing on a randomly moving platform
+
+Same mission again, on a platform whose path is random: straight stretches and arcs mixed, car-like (limited turn
+rate, no instant reversals), different on every launch. The platform node's `motion:=random` is documented in the
+`moving_platform` README; the mission script is the motion-agnostic `mission/circular_landing_main.py`. Code:
+`trajectories.py::random_state`, tests: `tests/test_missions.py::test_random`.
+
+**Status: validated in real PX4 SITL + Gazebo Harmonic at 0.3 m/s (defaults, 2 of 2 landed) and at the 0.5 m/s
+rung with `--kz 3.0` plus the curvature-aware tracker: 5 of 5 landed on the platform, ground-truth offset at contact
+0.39, 0.22, 0.25, 0.05 and 0.10 m (median 0.22 m, platform half-width 0.75 m).** With the validated defaults, two
+earlier 0.5 m/s runs landed slightly off the platform. The offline prediction for the fixed configuration was a
+median of 0.36 m and a worst case of 0.73 m, so the harness was slightly pessimistic here, not optimistic. The
+platform seeds were not captured, so those runs cannot be replayed; the ground-truth number is only meaningful with
+the platform node on sim time, and the landings were also confirmed visually.
+
+**Correction to an earlier version of this section, and to the circular 5 km/h claims.** The first offline tests of
+random motion reported "16/16 landed" using `error_to_estimate`. That number compares the touchdown with the
+tracker's *own prediction*, so it cannot see a wrong prediction -- and below about 1 m the marker is out of the
+camera's view, so the prediction is all the UAV has. Real runs at 0.5 m/s printed `Contact ... 0.04 m` and `0.15 m
+from the predicted platform position` and yet visibly missed the platform. The offline harness now reports the
+**true offset at contact** (`summary["offset_at_contact"]`: the UAV vs the platform's real centre at that instant,
+platform half-width 0.75 m). Sanity check of that instrument: a straight-line platform reads 0.09 m median, matching
+the 0.02-0.08 m measured in real Gazebo. The same instrument shows the older circular 5 km/h claim ("10/10, 0.17-0.21
+m") landed a median 1.69 m from the platform centre offline, 12 of 12 beyond the half-width: it is not a validated
+result, and neither are the circular 0.8 / 1.0 m/s real runs, which were only judged against the prediction.
+
+**What goes wrong, from a per-altitude trace.** While the marker is visible (1 m and above) the true offset stays
+0.1-0.4 m. Below that the UAV flies a straight-line prediction while the platform keeps turning (a heading change of
+up to 100 degrees in 3 s at 0.6 rad/s), and the offset grows to 1-2.5 m. The blind stretch was also longer than it
+needs to be: with the default vertical gain (`kz=1.0`) the P-controller approaches the handoff altitude
+exponentially, so 1.0 m to contact takes about 3.5 s (the real logs agree: 3-3.5 s). A perfect tracker lands at 0.13
+m, so the descent itself is fine; the cost is the prediction over the blind stretch.
+
+**Offline results** (true offset at contact, 16 seeds unless noted, latency 0.09/0.09; "on" = within 0.75 m):
+
+| Platform | Config | On the platform | Median / worst offset |
+|---|---|---|---|
+| smooth random, 0.3 m/s | defaults (kz 1, straight-line tracker) | 10/16 | 0.71 / 1.03 m |
+| smooth random, 0.3 m/s | `--kz 3.0`, curvature on | **16/16** | 0.23 / 0.40 m |
+| smooth random, 0.5 m/s | defaults | 1/16 | 1.53 / 2.91 m |
+| smooth random, 0.5 m/s | `--kz 3.0`, curvature on | **16/16** | 0.36 / 0.73 m |
+| hard zig-zag (1-3 s segments, 1.5 rad/s), 0.3 m/s, noise 0.2 m | `--kz 3.0`, curvature on | 12/16 | 0.50 / 2.87 m |
+| hard zig-zag, 0.5 m/s, noise 0.2 m | `--kz 3.0`, curvature on | 1/12 (2 landed) | open problem |
+| hard zig-zag, 0.5 m/s, perfect tracker | defaults | 12/12 | 0.23 / 0.34 m |
+| smooth random, 1.39 m/s (5 km/h), `--fast` | `--kz 3.0`, curvature on | 3/16 | 1.53 / 3.08 m, open problem |
+| smooth random, 0.8 m/s | defaults | 0/12 landed | control-law ceiling, `--fast` needed |
+
+Beyond 0.5 m/s the same configuration (with `--fast`) is only partly there offline: 0.8 m/s lands on the platform in
+6-7 of 12 runs (median offset 0.74-0.82 m), 1.0 m/s in 6 of 12 (median 0.75 m). The residual offset grows with
+speed, so the next gain has to come from a better prediction or a shorter blind stretch (for example the nested
+marker described above), not from more gain tuning.
+
+`--kz 3.0` shortens the blind stretch from ~3.5 s to ~2.1 s; curvature on halves what is left (turn-rate-aware
+extrapolation). Raising the touchdown sink rate to 0.8 m/s added almost nothing, so it is not used. Two things stay
+open: sharp zig-zag at 0.5 m/s and above (the tracker's estimate, not the controller: the perfect-tracker row), and
+anything near 5 km/h on a turning platform. The earlier advice to use `--no-curvature` here was based on the
+misleading metric and is withdrawn: with the true offset, curvature on is clearly better.
+
+**Real Gazebo at 1.0 m/s with `--fast --kz 3.0` (3 runs).** All three landed, but only one clearly on the platform:
+ground truth at contact 0.29 m, 1.22 m and 0.69 m. The platform is a 1.5 m square (half-width 0.75 m) and the drone
+has its own width, so a contact 0.69 m from the centre overhangs the edge, which is what the third run looked like.
+Counting "fully on" as roughly 0.45 m or better, that is 1 of 3, consistent with the 6 of 12 offline. (An earlier
+attempt at 1 m/s without `--fast` never locked: the default gains cannot follow that speed.) Two things showed up:
+lock-on was slow (runs 2 and 3 needed two and three failed 25 s lock attempts, 85 s and 110 s in total), and the UAV
+visibly jiggled while hovering over the platform.
+
+**Why it jiggles, measured offline.** The horizontal command's high-frequency part grows with camera detection
+noise: 0.19 m/s at 0.04 m noise, 0.40 at 0.10, 0.52 at 0.15, against 0.04-0.11 m/s for the default gains at 0.5 m/s.
+`--fast` multiplies the position error by kp 3, and its short 0.6 s tracker window makes the velocity feed-forward
+noisy (velocity noise scales with window^-1.5). The real runs' lock retries look like high noise: offline at 0.2 m
+noise the mission takes about 78-90 s, the same as the real 61-110 s, so the real noise is probably 0.1-0.2 m. What
+did not help: lowering kp alone (little), capping the acceleration (breaks lock-on: 1 of 10 landed), smoothing the
+output command (worse landing, lag). What did: a longer tracker window. `--window 1.0` offline at 0.2 m noise cuts
+the command jitter from 0.58 to 0.44 m/s and the mission time from about 78 s to 47 s (fewer lock retries), at the
+price of a slightly slower reaction to sharp turns (at 0.08 m noise, 1.0 s lost about one landing in twelve; 0.8 s
+lost none and still cut the jitter by a quarter). It does not fix landing accuracy at 1 m/s: that is still the blind
+last metre. Opt-in, not yet run in Gazebo:
+```bash
+python3 -m mission.circular_landing_main --start-platform --fast --kz 3.0 --window 1.0 --camera-latency 0.09
+```
+First real run with it (one run, so an anecdote, not a result): landed with 0.43 m ground-truth offset at contact, 70 s
+from take-off to contact (the three runs without it took 61, 85 and 110 s), still one failed 25 s lock attempt before the
+second locked. Needs more runs before concluding anything.
+
+Setup. Rebuild the platform package (`colcon build --packages-select moving_platform`, re-source), then each in its
+own terminal as for Phase 3. For the speed ladder change only `-p speed:=` (0.3, then 0.5). **Keep ground truth on**
+(no `--no-ground-truth`) and the platform node on sim time, so the new `Ground truth at that instant: X m from the
+platform centre` line is meaningful; that line, not `from the predicted platform position`, is the one to judge by.
+```bash
+ros2 run ros_gz_sim create -world default -file $(ros2 pkg prefix moving_platform)/share/moving_platform/models/moving_platform/model.sdf -name moving_platform -x 9.5 -y 6.0 -z 0.025
+ros2 run ros_gz_bridge parameter_bridge /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock
+ros2 topic echo /clock --once
+ros2 run ros_gz_bridge parameter_bridge /model/moving_platform/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist
+ros2 run moving_platform moving_platform_node --ros-args -p use_sim_time:=true -p motion:=random -p speed:=0.5 -p wait_for_start:=true
+
+cd /workspace/uav_rl_landing && python3 -m mission.circular_landing_main --start-platform --kz 3.0 --camera-latency 0.09
+```
+The node prints `seed=N` at startup; note it for every run so a failure can be replayed offline. If a run aborts
+with `ESTIMATE_MISMATCH`, the platform node was not on sim time (its ground truth drifted); rerun.
+
+**The "tracked platform speed is NN% of /platform/state's" NOTE is unreliable at low speed.** One real 0.3 m/s run
+printed "~54% of real time" even though the landing was accurate and the other tracked-speed readings were 0.23-0.30
+m/s against a true 0.30 m/s. The check divides one instantaneous speed estimate by the true speed and flags anything
+outside +-3%; at 0.3 m/s, with 0.04 m detection noise, a single estimate easily misses by more than that. Offline,
+with the simulation at *exactly* real time, the note still fired in 26 of 40 runs (ratios 86%-118%). Read the
+real-time factor from Gazebo's bottom bar instead. It only affects log text, never the control.
+
 ## Architecture
 
 ```

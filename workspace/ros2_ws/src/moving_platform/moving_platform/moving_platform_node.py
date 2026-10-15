@@ -9,6 +9,11 @@ see the package README for the exact spawn + bridge commands.
 Trajectory (parameter `motion`):
   - "circular" (default): motion around (center_x, center_y) at a fixed height,
     parametrized by radius and angular_speed.
+  - "random": smooth, car-like random motion at constant `speed` inside an elliptical arena
+    (arena_x, arena_y, arena_half_x, arena_half_y): straight stretches and arcs with a limited
+    turn rate, no instant reversals. The platform starts AT the arena centre (spawn the Gazebo
+    model there). `seed` -1 picks a fresh path each launch and logs the seed it chose; pass that
+    number back as `-p seed:=N` to replay the same path offline or in Gazebo.
   - "linear": straight line from (start_x, start_y) along heading_deg (0 = east,
     90 = north) at `speed`; with travel_length > 0 it goes back and forth over
     that distance, with 0 it goes one way forever. Same spawn rule: spawn the
@@ -28,6 +33,7 @@ ros_gz_bridge service bridge for /world/<world>/set_pose) if that turns out
 to matter in practice.
 """
 import math
+import random
 import time
 
 import rclpy
@@ -37,7 +43,7 @@ from interfaces.msg import PlatformState
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Empty
 
-from moving_platform.trajectories import circular_state, linear_state
+from moving_platform.trajectories import circular_state, linear_state, random_state
 
 
 class MovingPlatformNode(Node):
@@ -52,13 +58,22 @@ class MovingPlatformNode(Node):
         self.declare_parameter("z", 0.025)             # [m] -- match the spawn height
         self.declare_parameter("publish_hz", 20.0)
 
-        self.declare_parameter("motion", "circular")   # "circular" | "linear"
+        self.declare_parameter("motion", "circular")   # "circular" | "linear" | "random"
         self.declare_parameter("start_x", 10.0)        # [m] linear: start point (spawn here)
         self.declare_parameter("start_y", 0.0)         # [m]
         self.declare_parameter("heading_deg", 90.0)    # linear: 0 = east, 90 = north
         self.declare_parameter("speed", 0.4)           # [m/s] linear speed
         self.declare_parameter("travel_length", 0.0)   # [m] linear: >0 = back and forth over this distance
         self.declare_parameter("wait_for_start", False)  # hold still until /moving_platform/start
+        # motion:=random (the platform starts at the arena centre -- spawn the model there)
+        self.declare_parameter("seed", -1)             # -1 = pick a fresh random seed and log it
+        self.declare_parameter("arena_x", 9.5)         # [m] arena centre (Gazebo ENU)
+        self.declare_parameter("arena_y", 6.0)
+        self.declare_parameter("arena_half_x", 1.5)    # [m] half-width east-west
+        self.declare_parameter("arena_half_y", 5.0)    # [m] half-length north-south
+        self.declare_parameter("max_turn_rate", 0.6)   # [rad/s] sharpest turn; min turning radius = speed / this
+        self.declare_parameter("seg_min", 3.0)         # [s] shortest straight/arc segment
+        self.declare_parameter("seg_max", 8.0)         # [s] longest straight/arc segment
 
         self.radius = self.get_parameter("radius").value
         self.angular_speed = self.get_parameter("angular_speed").value
@@ -67,14 +82,22 @@ class MovingPlatformNode(Node):
         self.z = self.get_parameter("z").value
         publish_hz = self.get_parameter("publish_hz").value
         self.motion = self.get_parameter("motion").value
-        if self.motion not in ("circular", "linear"):
-            raise ValueError(f"motion must be 'circular' or 'linear', got {self.motion!r}")
+        if self.motion not in ("circular", "linear", "random"):
+            raise ValueError(f"motion must be 'circular', 'linear' or 'random', got {self.motion!r}")
         self.start_x = self.get_parameter("start_x").value
         self.start_y = self.get_parameter("start_y").value
         self.heading_deg = self.get_parameter("heading_deg").value
         self.speed = self.get_parameter("speed").value
         self.travel_length = self.get_parameter("travel_length").value
         self.moving = not self.get_parameter("wait_for_start").value
+        self.seed = self.get_parameter("seed").value
+        if self.seed < 0:
+            self.seed = random.SystemRandom().randrange(1_000_000)
+        self.arena = (self.get_parameter("arena_x").value, self.get_parameter("arena_y").value,
+                      self.get_parameter("arena_half_x").value, self.get_parameter("arena_half_y").value)
+        self.max_turn_rate = self.get_parameter("max_turn_rate").value
+        self.seg_min = self.get_parameter("seg_min").value
+        self.seg_max = self.get_parameter("seg_max").value
 
         self.state_publisher = self.create_publisher(
             PlatformState, "/platform/state", 10,
@@ -118,6 +141,15 @@ class MovingPlatformNode(Node):
                       else "one way, no end")
             description = (f"linear motion from ({self.start_x}, {self.start_y}) heading "
                            f"{self.heading_deg} deg at {self.speed} m/s, {length}")
+        elif self.motion == "random":
+            description = (f"random motion at {self.speed} m/s, seed={self.seed} (replay with -p seed:={self.seed}), "
+                           f"arena centre ({self.arena[0]}, {self.arena[1]}) half-axes {self.arena[2]} x "
+                           f"{self.arena[3]} m, max turn rate {self.max_turn_rate} rad/s")
+            if min(self.arena[2], self.arena[3]) < 2.5 * self.speed / self.max_turn_rate:
+                self.get_logger().warn(
+                    f"Arena half-axis {min(self.arena[2], self.arena[3])} m is under 2.5x the minimum turning radius "
+                    f"({self.speed / self.max_turn_rate:.2f} m): the platform may not be able to turn around inside it. "
+                    "Enlarge the arena or raise max_turn_rate.")
         else:
             description = (f"circular motion, radius={self.radius}m, "
                            f"angular_speed={self.angular_speed}rad/s, "
@@ -177,6 +209,9 @@ class MovingPlatformNode(Node):
         if self.motion == "linear":
             return linear_state(t, self.start_x, self.start_y, self.heading_deg,
                                 self.speed, self.travel_length)
+        if self.motion == "random":
+            return random_state(t, self.arena[0], self.arena[1], self.arena[2], self.arena[3], self.speed,
+                                self.seed, self.max_turn_rate, self.seg_min, self.seg_max)
         return circular_state(t, self.center_x, self.center_y, self.radius, self.angular_speed)
 
     def publish_platform(self):

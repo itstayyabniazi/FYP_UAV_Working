@@ -43,6 +43,12 @@ align_speed_tol=0.6, realign_tol=0.8 -- offline: 10/10 landings at every speed f
 error, no regression at the default 0.45 m/s circle (actually slightly tighter: 0.04-0.05 m vs
 0.06-0.09 m).
 
+CORRECTION (2026-10): the offline "10/10 ... 0.17-0.21 m" above was judged with error_to_estimate, which compares the
+landing with the tracker's own prediction and cannot see a wrong prediction while the marker is out of view (below ~1 m).
+Measured against the platform's real centre at contact (summary["offset_at_contact"]), the 5 km/h circular case lands a
+median 1.69 m off (12 of 12 beyond the 0.75 m half-width). Treat 5 km/h circular as NOT validated; see the vision_node
+README, "Phase 3c". Straight-line motion is unaffected (0.09 m true offset offline, matching real Gazebo).
+
 The last two (align_speed_tol, realign_tol -- the hysteresis around "aligned enough to descend")
 were added after a real Gazebo run at 5 km/h with the first --fast cut (kp/max_accel/max_speed/
 window only) locked on but never settled: tracking error oscillated between "aligned" and "loose"
@@ -199,6 +205,16 @@ def main():
                              "target -- see this module's docstring for the offline results and the "
                              "camera-latency sensitivity this trades in for it. Offline-tested only, not yet "
                              "run in real Gazebo at 5 km/h (0.8 and 1.0 m/s have).")
+    parser.add_argument("--kz", type=float, default=None, metavar="GAIN",
+                        help="vertical gain [1/s] (default 1.0, the hardware-validated value). 3.0 shortens the blind final "
+                             "descent (the last ~1 m, marker out of view) from ~3.5 s to ~2.1 s, which matters for a platform "
+                             "that TURNS: offline it halves the landing offset. Opt-in; not run in real Gazebo yet.")
+    parser.add_argument("--window", type=float, default=None, metavar="SECONDS",
+                        help="tracker fit window for the platform's position and velocity (default 1.2, or 0.6 with --fast). "
+                             "A longer window averages out camera noise: offline at 0.2 m detection noise, --fast with 1.0 "
+                             "cuts the horizontal command jitter by ~25% and the mission time (lock retries) from ~78 s to "
+                             "~47 s; the price is a slightly slower reaction to sharp turns. Try 0.8-1.0 if the UAV jiggles "
+                             "or keeps failing to lock with --fast. Opt-in; not run in real Gazebo yet.")
     parser.add_argument("--no-ground-truth", action="store_true",
                         help="don't cross-check the camera against /platform/state or report the final offset")
     args = parser.parse_args()
@@ -236,6 +252,13 @@ def main():
     # comment on tracker_max_speed in moving_landing.py.
     fast_kwargs = dict(kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=0.6,
                        align_speed_tol=0.6, realign_tol=0.8, tracker_max_speed=2.5) if args.fast else {}
+    overrides = {}
+    if args.kz is not None:
+        overrides["kz"] = args.kz
+    if args.window is not None:
+        overrides["tracker_window"] = args.window
+    if overrides:
+        io.log(f"Overrides on top of the control profile: {overrides}")
     config = MovingLandingConfig(
         patrol_corners=tuple(args.corners),
         search_altitude=args.altitude,
@@ -243,7 +266,7 @@ def main():
         start_platform=args.start_platform,
         use_ground_truth=not args.no_ground_truth,
         tracker_curvature=not args.no_curvature,
-        **fast_kwargs,
+        **{**fast_kwargs, **overrides},
     )
     result = MovingPlatformLander(io, config, log=io.log).run()
 

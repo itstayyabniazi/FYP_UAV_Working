@@ -86,7 +86,7 @@ node-by-node launch sequence.
 |---|---|---|
 | **1** | Take off and land on a **static platform whose coordinates are hard-coded** in the code | **Completed** (verified in simulation) |
 | **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | **Completed** (verified in simulation) — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform-completed) |
-| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Linear completed** (verified in simulation, 4/4 landings at 0.3-0.4 m/s; **5 km/h real-Gazebo-validated 3/3 with `--fast`**); **circular implemented, offline-verified at 5 km/h, not yet real-Gazebo-tested at that speed**; see [§3.3](#33-phase-3--landing-on-a-moving-platform-linear-motion-completed) |
+| **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Linear completed** (verified in simulation, 4/4 landings at 0.3-0.4 m/s; **5 km/h real-Gazebo-validated 3/3 with `--fast`**); **circular implemented; real-Gazebo landed at 0.45–1.0 m/s but only judged against the tracker's own prediction, 5 km/h NOT validated (true offset offline: median 1.7 m)**; **random motion (Phase 3c): real-Gazebo validated at 0.3 m/s (2/2) and at 0.5 m/s with `--kz 3.0` (5/5, offset 0.05–0.39 m)**; see [§3.3](#33-phase-3--landing-on-a-moving-platform-linear-motion-completed) |
 | 4+ | RL-controlled approach (the Q-learning work in §3.4), real hardware | Not started |
 
 ### 3.1 Phase 1 — takeoff and landing on hard-coded platform coordinates (completed)
@@ -328,6 +328,31 @@ on wall-clock time while the real-time factor wandered between 58% and 149%; the
 bridge `/clock` and start the node with `-p use_sim_time:=true` (see the `vision_node` README). Landing accuracy was
 unaffected either way; only smoothness/duration was.
 
+**Phase 3c: randomly moving platform (real-Gazebo validated at 0.3 m/s and, with `--kz 3.0`, at 0.5 m/s: 5 of 5 on the platform).**
+The next step toward the car-roof demo: a platform whose path is neither a line nor a circle but a random mix of
+straight stretches and arcs. `motion:=random` in `moving_platform_node` (pure function `random_state` in
+`trajectories.py`) gives smooth, car-like motion — constant speed, limited turn rate, no instant reversals,
+confined to an arena on the patrol's B→C leg, a fresh random path on every launch (the node logs the seed so a
+failed run can be replayed offline). Real PX4 SITL + Gazebo: 0.3 m/s landed 2 of 2; two runs at 0.5 m/s with the
+validated defaults landed slightly off the platform; with the fix below, **5 of 5 runs at the 0.5 m/s rung landed on
+the platform, ground-truth offset at contact 0.05–0.39 m (median 0.22 m)**.
+
+**An important correction to how this project judged landings.** `error_to_estimate` and the `Contact … from the
+predicted platform position` line compare the touchdown with the tracker's own prediction, so they cannot show a bad
+prediction, and below about 1 m the marker is out of the camera's view, so the prediction is all the UAV has. For a
+platform that turns, that blind stretch (about 3.5 s with the default vertical gain) lets the prediction drift by
+1–2.5 m while those numbers still read 0.05 m. The offline harness now measures the **true offset at contact** (the
+mission logs it as `Ground truth at that instant`), and it shows: smooth random motion with the validated defaults
+lands off the platform at 0.5 m/s (median offset 1.53 m); the earlier circular 5 km/h "offline 10/10" landed a
+median 1.69 m from the centre, so that result is withdrawn, and the circular 0.8/1.0 m/s real runs were only judged
+against the prediction. A straight-line platform is unaffected (0.09 m true offset, matching the real 0.02–0.08 m).
+An opt-in fix, `--kz 3.0` (vertical gain, blind stretch 3.5 s → 2.1 s) plus the curvature-aware tracker, brought smooth
+random motion at 0.3 and 0.5 m/s onto the platform in 16/16 offline runs (median 0.23 m and 0.36 m) and then in the 5
+real runs above. Offline it is only partly there at 0.8–1.0 m/s with `--fast` (6–7 of 12 on the platform), and three real runs at 1.0 m/s landed 0.29, 1.22 and 0.69 m from the centre (one clearly on the platform), with slow lock-on and visible jiggle. The jiggle is `--fast`'s gain and short tracker window amplifying camera noise; an opt-in `--window 1.0` cuts the command jitter by about 25% offline and the lock retries by about 40%, not yet flown. Still open: a
+sharp zig-zag at 0.5 m/s and above (the tracker's velocity estimate is the bottleneck: a perfect tracker lands
+12/12) and anything near 5 km/h on a turning platform. Details, the full table and the commands: the
+[`vision_node` README, "Phase 3c"](workspace/ros2_ws/src/vision_node/README.md).
+
 ### 3.4 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
 
 - **Full ROS 2 pipeline, confirmed running end to end against live PX4 SITL + Gazebo Harmonic**:
@@ -390,7 +415,7 @@ as ROS 2 parameters:
 | Motion | Speed | Parameter |
 |---|---|---|
 | Linear (Phase 3, completed) | 0.3–0.4 m/s validated with default gains (0.5 m/s and above degrades lock-on); **1.39 m/s (5 km/h) real-Gazebo-validated (3/3) with `--fast` + `travel_length=50`** -- see §3.3 | `speed` (default 0.4 m/s), `travel_length` |
-| Circular (Phase 3, offline-verified, not yet run in Gazebo at 5 km/h) | tangential speed = `radius` × `angular_speed`, e.g. 0.45 m/s at the demo 1.5 m / 0.3 rad/s; 1.39 m/s offline-validated with `--fast`, not yet real-Gazebo-tested at that speed | `radius`, `angular_speed` (default 0.3 rad/s) |
+| Circular (Phase 3) | tangential speed = `radius` × `angular_speed`, e.g. 0.45 m/s at the demo 1.5 m / 0.3 rad/s; 5 km/h is **not validated** (the old offline 10/10 measured only the prediction; true offset median 1.7 m, see §3.3) | `radius`, `angular_speed` (default 0.3 rad/s) |
 
 In every case the drone's own speed (1–1.5 m/s) is several times the platform's, which is what
 makes lock-on tracking (`v_platform + Kp × error`) able to close the gap at all.

@@ -33,6 +33,30 @@ default, simulation time with `-p use_sim_time:=true` (needs the `/clock` bridge
 speed") -- use that when Gazebo's real-time factor is below 1, or the analytic ground truth drifts ahead of the model. After changing the package: `colcon build --packages-select
 moving_platform` and re-source.
 
+## Random motion
+
+`-p motion:=random` drives the platform along a random but smooth, car-like path: constant `speed`, a chain of
+straight stretches and arcs with a limited turn rate (heading is continuous, so there are no instant reversals),
+confined to an elliptical arena. It is a pure function of time in `moving_platform/trajectories.py`
+(`random_state`), shared with the offline test harness.
+
+Parameters: `speed` (m/s, default 0.4 -- pass `0.3` for the low-speed rung), `arena_x`/`arena_y` (arena centre,
+default 9.5 / 6.0 -- the platform **starts at the centre, spawn the model there**), `arena_half_x`/`arena_half_y`
+(default 1.5 / 5.0 m, sits on the patrol's B to C leg like the circular demo), `max_turn_rate` (rad/s, default
+0.6; minimum turning radius is `speed / max_turn_rate`), `seg_min`/`seg_max` (segment length in seconds, default
+3 / 8; shorter segments mean more zig-zag), and `seed`. **`seed` defaults to -1: a fresh random path every launch.**
+The node prints the seed it picked in its startup line; pass it back as `-p seed:=N` to replay the same path
+(offline too: `random_state(t, ..., seed=N)`).
+
+Keep the arena's smaller half-axis above about 2.5x the minimum turning radius, or the platform cannot turn
+around inside it (the node warns at startup). Faster platforms need a bigger arena or a higher `max_turn_rate`.
+
+```bash
+ros2 run ros_gz_sim create -world default -file $(ros2 pkg prefix moving_platform)/share/moving_platform/models/moving_platform/model.sdf -name moving_platform -x 9.5 -y 6.0 -z 0.025
+ros2 run moving_platform moving_platform_node --ros-args -p use_sim_time:=true -p motion:=random -p speed:=0.3 -p wait_for_start:=true
+```
+After changing the package: `colcon build --packages-select moving_platform` and re-source.
+
 ## One-time setup per simulation session
 
 Gazebo (brought up by PX4 SITL) must already be running. Then, **spawn the platform model**
