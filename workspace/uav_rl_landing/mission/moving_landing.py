@@ -104,6 +104,7 @@ class MovingPlatformLander(VisionLander):
         c = self.cfg
         self.tracker = TargetTracker(c.tracker_window, c.tracker_min_samples, c.tracker_min_span,
                                      c.tracker_max_speed, c.max_extrapolation, curvature=c.tracker_curvature)
+        self.offset_at_contact = None         # [m] UAV vs ground-truth platform centre at the moment of contact
 
     # -- hooks ------------------------------------------------------------
 
@@ -140,6 +141,7 @@ class MovingPlatformLander(VisionLander):
         last_state = None
         touchdown_since = None                # set when the touchdown phase begins
         contact_since = None
+        warned_slow_gains = False
         self.log("LOCK: tracking the platform in velocity mode "
                  f"(kp={cfg.kp}, descent {cfg.descent_rate} m/s while aligned).")
 
@@ -163,6 +165,12 @@ class MovingPlatformLander(VisionLander):
                 self.log(f"Could not lock on within {cfg.lock_timeout:.0f} s (tracking unstable?) -- giving up this attempt.")
                 return "LOST"
             last_state = state
+            if (not warned_slow_gains and state.velocity_valid and cfg.max_accel <= 1.0
+                    and math.hypot(state.vx, state.vy) > 0.75):
+                warned_slow_gains = True
+                self.log(f"  WARNING: the platform is moving at ~{math.hypot(state.vx, state.vy):.2f} m/s, faster than the "
+                         "default gains can follow (offline they never lock above ~0.8 m/s). If this run does not lock "
+                         "on, restart the mission with --fast (circular_landing_main.py).")
 
             ex, ey = state.x - x, state.y - y
             err = math.hypot(ex, ey)
@@ -231,6 +239,17 @@ class MovingPlatformLander(VisionLander):
                         or now - touchdown_since > cfg.touchdown_timeout):
                     self.log(f"Contact at {alt:.2f} m ({now - touchdown_since:.1f} s into the touchdown phase), "
                              f"{err:.2f} m from the predicted platform position. Handing over to PX4 to disarm.")
+                    # The line above is measured against the tracker's OWN prediction, so it cannot show an error in
+                    # that prediction -- and below ~1 m the marker is out of view, so the prediction is all the UAV
+                    # has. A platform that turns during that blind stretch makes the two numbers disagree by metres.
+                    # This one compares against the ground truth at the same instant (no post-landing sampling delay);
+                    # it is only meaningful when the platform node runs on sim time (-p use_sim_time:=true).
+                    truth = io.platform_truth() if cfg.use_ground_truth else None
+                    if truth is not None:
+                        ux, uy, _ = io.uav_position()
+                        self.offset_at_contact = math.hypot(ux - truth[0], uy - truth[1])
+                        self.log(f"  Ground truth at that instant: {self.offset_at_contact:.2f} m from the platform "
+                                 "centre (half-width 0.75 m). Meaningful only with the platform node on sim time.")
                     return "FINAL"
 
             if now - last_log >= cfg.progress_period:
@@ -275,4 +294,5 @@ class MovingPlatformLander(VisionLander):
             dn, de = summary["final_xy"][0] - truth[0], summary["final_xy"][1] - truth[1]
             summary["offset_from_platform_centre"] = (dn, de)
         summary["ground_truth_unreliable"] = self.ground_truth_unreliable
+        summary["offset_at_contact"] = self.offset_at_contact
         return summary

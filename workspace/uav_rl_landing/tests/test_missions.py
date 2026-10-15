@@ -13,9 +13,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "ros2_ws", "src", "moving_platform"))
 
-from moving_platform.trajectories import circular_state, linear_state  # the same code the ROS node runs
+from moving_platform.trajectories import circular_state, linear_state, random_state  # the same code the ROS node runs
 from mission.moving_landing import MovingLandingConfig, MovingPlatformLander
-from mission.target_tracker import PositionHistory, TargetTracker, fit_camera_latency
+from mission.target_tracker import PositionHistory, TargetState, TargetTracker, fit_camera_latency
 from mission.vision_landing import VisionLander, VisionLandingConfig
 from tests.fake_world import FakeWorld
 
@@ -565,6 +565,188 @@ def test_circular():
                   rate < 0.5, f"{rate:.0%}")
 
 
+def run_random_sweep(title, n, speed, noise=0.04, fast=False, turn=0.6, segs=(3.0, 8.0), curvature=False,
+                     arena=None, perfect_tracker=False, kz=None):
+    """Mission against random_state paths, one seed per run (the seed IS the arrival phase here).
+
+    Judged on the TRUE offset at contact (the UAV vs the platform's real centre at that instant, from the
+    mission's own `offset_at_contact`), NOT on error_to_estimate. error_to_estimate compares the landing with the
+    tracker's own prediction, so it cannot see a bad prediction -- and below ~1 m the marker is out of view, so a
+    platform that turns during the blind final descent is missed by metres while error_to_estimate reads ~0.05 m.
+    (A first version of this test used error_to_estimate and reported 16/16 on paths that missed the platform.)
+    Returns the fraction of runs that touched down within the platform's 0.75 m half-width."""
+    arena = arena or dict(center_x=9.5, center_y=6.0, half_x=1.5, half_y=5.0)
+    cfg_kw = dict(kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=0.6, align_speed_tol=0.6,
+                  realign_tol=0.8, tracker_max_speed=2.5) if fast else {}
+    if kz is not None:
+        cfg_kw["kz"] = kz
+    landed, on, offsets = 0, 0, []
+    for seed in range(n):
+        world = FakeWorld(lambda t, sd=seed: random_state(t, speed=speed, seed=sd, max_turn_rate=turn,
+                                                          seg_min=segs[0], seg_max=segs[1], **arena),
+                          uav_start=(0.0, 9.0), noise=noise, latency=0.09, assumed_latency=0.09, seed=seed)
+        cfg = MovingLandingConfig(start_platform=True, mission_timeout=240, tracker_curvature=curvature, **cfg_kw)
+        lander = MovingPlatformLander(world, cfg, log=lambda m: None)
+        if perfect_tracker:        # isolation test only: hand the controller the exact platform state
+            def truth_state(now, world=world, tracker=lander.tracker):
+                if not tracker.has_data():
+                    return None
+                north, east, vn, ve = world.platform_ned(world.t)
+                return TargetState(north, east, vn, ve, True, 99, 0.0)
+            lander.tracker.state = truth_state
+        r = lander.run()
+        off = r.get("offset_at_contact")
+        if r["outcome"] == "LANDED" and off is not None:
+            landed += 1
+            offsets.append(off)
+            on += off <= 0.75
+    offsets.sort()
+    med = f"median {offsets[len(offsets) // 2]:.2f} m, worst {offsets[-1]:.2f} m" if offsets else "never landed"
+    print(f"\n[{title}] on the platform {on}/{n} ({landed} landed); true offset at contact: {med}")
+    return on / n
+
+
+def jitter_and_mission_time(window, noise, n=8, speed=1.0):
+    """--fast on a 1 m/s random path: (mean RMS of the horizontal command's high-frequency part while descending over
+    the platform, mean mission time). The command jitter is what shows up as the UAV 'jiggling'; mission time rises
+    with failed lock attempts."""
+    arena = dict(center_x=9.0, center_y=6.0, half_x=3.0, half_y=7.0)
+    jitters, times = [], []
+    for seed in range(n):
+        world = FakeWorld(lambda t, sd=seed: random_state(t, speed=speed, seed=sd, max_turn_rate=1.0, **arena),
+                          uav_start=(0.0, 9.0), noise=noise, latency=0.09, assumed_latency=0.09, seed=seed)
+        cfg = MovingLandingConfig(start_platform=True, mission_timeout=240, tracker_curvature=True, kz=3.0,
+                                  kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=window, align_speed_tol=0.6,
+                                  realign_tol=0.8, tracker_max_speed=2.5)
+        cmds, original = [], world.command_velocity
+
+        def record(n_, e_, d_, world=world, cmds=cmds, original=original):
+            if 1.5 < world.p[2] < 4.7:
+                cmds.append((n_, e_))
+            return original(n_, e_, d_)
+        world.command_velocity = record
+        MovingPlatformLander(world, cfg, log=lambda m: None).run()
+        k, hf = 5, []
+        for i in range(k, len(cmds) - k):
+            mean_n = sum(c[0] for c in cmds[i - k:i + k + 1]) / (2 * k + 1)
+            mean_e = sum(c[1] for c in cmds[i - k:i + k + 1]) / (2 * k + 1)
+            hf.append(math.hypot(cmds[i][0] - mean_n, cmds[i][1] - mean_e))
+        if hf:
+            jitters.append(math.sqrt(sum(x * x for x in hf) / len(hf)))
+        times.append(world.t)
+    return sum(jitters) / len(jitters), sum(times) / len(times)
+
+
+def test_random():
+    """
+    Phase 3c: a randomly moving platform (moving_platform/trajectories.py's random_state): a chain of
+    constant-speed straight/arc segments, heading continuous across segments, confined to an arena.
+    Smooth and car-like on purpose -- the linear back-and-forth tests showed an instant velocity
+    reversal breaks lock-on, and a real car cannot do that.
+    """
+    A = dict(center_x=9.5, center_y=6.0, half_x=1.5, half_y=5.0)
+    print("\n[random_state: trajectory properties]")
+    speed, turn, dt = 0.3, 0.6, 0.1
+    worst_r = worst_speed = worst_fd = worst_turn = 0.0
+    for seed in range(40):
+        prev = None
+        for i in range(3001):
+            x, y, vx, vy = random_state(i * dt, speed=speed, seed=seed, max_turn_rate=turn, **A)
+            worst_r = max(worst_r, math.hypot((x - 9.5) / 1.5, (y - 6.0) / 5.0))
+            worst_speed = max(worst_speed, abs(math.hypot(vx, vy) - speed))
+            if prev is not None:
+                worst_fd = max(worst_fd, math.hypot((x - prev[0]) / dt - (vx + prev[2]) / 2,
+                                                    (y - prev[1]) / dt - (vy + prev[3]) / 2))
+                d = math.atan2(vy, vx) - math.atan2(prev[3], prev[2])
+                worst_turn = max(worst_turn, abs(math.atan2(math.sin(d), math.cos(d))) / dt)
+            prev = (x, y, vx, vy)
+    check("speed is exactly constant", worst_speed < 1e-9, f"worst error {worst_speed:.1e} m/s")
+    check("velocity is the derivative of position", worst_fd < 0.02, f"worst mismatch {worst_fd:.4f} m/s")
+    check("turn rate never exceeds max_turn_rate (no instant heading flips)", worst_turn <= turn * 1.02,
+          f"worst {worst_turn:.3f} rad/s vs {turn}")
+    check("stays inside the arena (40 seeds x 300 s)", worst_r <= 1.15, f"worst normalized radius {worst_r:.3f}")
+    check("starts at the arena centre",
+          random_state(0.0, speed=speed, seed=3, **A)[:2] == (A["center_x"], A["center_y"]))
+    check("same seed -> same path, different seed -> different path",
+          random_state(77.7, speed=speed, seed=5, **A) == random_state(77.7, speed=speed, seed=5, **A)
+          and random_state(77.7, speed=speed, seed=5, **A) != random_state(77.7, speed=speed, seed=6, **A))
+
+    # -- geometry: the default arena sits on the patrol's B->C leg like the circular demo does
+    altitude = MovingLandingConfig().search_altitude
+    de_tol, dn_tol = 0.50 * altitude - 0.25, 0.63 * altitude - 0.25
+    check("default arena stays within camera east-west range of the B->C leg (east=9)",
+          abs(A["center_x"] - 9.0) + A["half_x"] <= de_tol,
+          f"worst {abs(A['center_x'] - 9.0) + A['half_x']:.2f} m vs {de_tol:.2f} m")
+    check("default arena's north extent stays within the B->C leg's sweep plus camera reach",
+          A["center_y"] - A["half_y"] >= -dn_tol and A["center_y"] + A["half_y"] <= 9.0 + dn_tol,
+          f"north [{A['center_y'] - A['half_y']:.1f}, {A['center_y'] + A['half_y']:.1f}]")
+
+    # -- the descent: blind time is what costs accuracy on a turning platform
+    # Below ~1 m the marker is out of view, so the UAV flies on a prediction of where the platform will be. With
+    # the default vertical gain kz=1 the descent from 1 m to contact takes ~3.5 s, long enough for a platform
+    # turning at 0.6 rad/s to leave the prediction by metres.
+    zz = dict(turn=1.5, segs=(1.0, 3.0), arena=dict(center_x=9.0, center_y=6.0, half_x=2.0, half_y=6.0))
+    rate = run_random_sweep("random 0.3 m/s, hardware-validated defaults (kz 1, straight-line tracker)", 16, speed=0.3)
+    check("DEFAULTS alone leave 0.3 m/s random landings off the platform too often (documents why kz/curvature)",
+          rate < 0.85, f"{rate:.0%} on the platform")
+    rate = run_random_sweep("random 0.3 m/s, kz 3 + curvature-aware tracker", 16, speed=0.3, kz=3.0, curvature=True)
+    check("0.3 m/s random: on the platform in at least 90% of runs", rate >= 0.9, f"{rate:.0%}")
+    rate = run_random_sweep("random 0.5 m/s, hardware-validated defaults", 16, speed=0.5)
+    check("DEFAULTS at 0.5 m/s mostly miss the platform (documents the blind-descent problem)", rate < 0.3,
+          f"{rate:.0%} on the platform")
+    rate = run_random_sweep("random 0.5 m/s, kz 3 + curvature-aware tracker", 16, speed=0.5, kz=3.0, curvature=True)
+    check("0.5 m/s random: on the platform in at least 90% of runs", rate >= 0.9, f"{rate:.0%}")
+    rate = run_random_sweep("random 0.3 m/s HARD zig-zag (1-3 s segments, 1.5 rad/s), noise 0.2 m, kz 3 + curvature",
+                            16, speed=0.3, noise=0.2, kz=3.0, curvature=True, **zz)
+    check("hard zig-zag at 0.3 m/s: on the platform in most runs (partial, not solved)", 0.55 <= rate,
+          f"{rate:.0%}")
+
+    # -- documented limits, found offline: not fixed, recorded so they cannot silently change
+    rate = run_random_sweep("hard zig-zag 0.5 m/s, kz 3 + curvature (expected to still fail)", 12, speed=0.5,
+                            noise=0.2, kz=3.0, curvature=True, **zz)
+    check("hard zig-zag at 0.5 m/s is a known open problem", rate < 0.5, f"{rate:.0%} on the platform")
+    rate = run_random_sweep("hard zig-zag 0.5 m/s, PERFECT tracker, no noise (isolation)", 12, speed=0.5,
+                            perfect_tracker=True, **zz)
+    check("...and the bottleneck is the tracker estimate, not the control law", rate >= 0.9, f"{rate:.0%}")
+    big = dict(center_x=9.0, center_y=6.0, half_x=3.5, half_y=8.0)
+    rate = run_random_sweep("random 1.39 m/s (5 km/h), --fast, kz 3 + curvature (expected to still fail)", 16,
+                            speed=1.39, fast=True, turn=1.0, arena=big, kz=3.0, curvature=True)
+    check("5 km/h on a random path is a known open problem: lands, but mostly off the platform", rate < 0.5,
+          f"{rate:.0%} on the platform")
+    rate = run_random_sweep("random 0.8 m/s, DEFAULT gains (control-law ceiling)", 12, speed=0.8, turn=1.0,
+                            arena=dict(center_x=9.0, center_y=6.0, half_x=2.0, half_y=6.0))
+    check("default gains cannot follow 0.8 m/s -- --fast is needed there", rate < 0.5, f"{rate:.0%}")
+
+    # -- the older circular 5 km/h "10/10" (test_circular) is judged on error_to_estimate; the true offset says otherwise
+    fast_kw = dict(kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=0.6, align_speed_tol=0.6, realign_tol=0.8,
+                   tracker_max_speed=2.5)
+    offsets = []
+    for i in range(8):
+        world = FakeWorld(lambda t, j=i * 2.0: circular_state(t + j, 9.5, 3.0, 2.0, 0.695), uav_start=(0.0, 9.0),
+                          latency=0.09, assumed_latency=0.09, seed=i)
+        r = MovingPlatformLander(world, MovingLandingConfig(start_platform=True, mission_timeout=240,
+                                                            tracker_curvature=True, **fast_kw),
+                                 log=lambda m: None).run()
+        if r["outcome"] == "LANDED" and r.get("offset_at_contact") is not None:
+            offsets.append(r["offset_at_contact"])
+    offsets.sort()
+    print(f"\n[circular 5 km/h (r=2 m, 0.695 rad/s), --fast, curvature on: true offset at contact] "
+          f"{len(offsets)} landed, median {offsets[len(offsets) // 2]:.2f} m")
+    check("circular 5 km/h lands off the platform: test_circular's 10/10 only measured the prediction (open problem)",
+          bool(offsets) and offsets[len(offsets) // 2] > 0.75, f"median {offsets[len(offsets) // 2]:.2f} m vs 0.75 m")
+
+    # -- the 'jiggle': --fast's gain and short 0.6 s tracker window turn camera noise into command noise; a longer window
+    # averages it out (and cuts lock retries), at the price of a slightly slower reaction to sharp turns
+    jit_short, time_short = jitter_and_mission_time(0.6, 0.2)
+    jit_long, time_long = jitter_and_mission_time(1.0, 0.2)
+    print(f"\n[--fast at 1 m/s, detection noise 0.2 m] window 0.6 s: command jitter {jit_short:.2f} m/s, mission {time_short:.0f} s"
+          f"; window 1.0 s: {jit_long:.2f} m/s, {time_long:.0f} s")
+    check("a 1.0 s tracker window cuts --fast's command jitter (the 'jiggle') under camera noise",
+          jit_long < 0.9 * jit_short, f"{jit_long:.2f} vs {jit_short:.2f} m/s")
+    check("...and cuts the mission time (fewer failed lock attempts)", time_long < 0.8 * time_short,
+          f"{time_long:.0f} vs {time_short:.0f} s")
+
+
 if __name__ == "__main__":
     test_tracker()
     test_position_history()
@@ -573,5 +755,6 @@ if __name__ == "__main__":
     test_latency()
     test_moving()
     test_circular()
+    test_random()
     print("\n" + ("ALL TESTS PASSED" if not failures else f"FAILED: {failures}"))
     sys.exit(1 if failures else 0)
