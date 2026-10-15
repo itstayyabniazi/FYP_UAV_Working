@@ -560,6 +560,23 @@ outside +-3%; at 0.3 m/s, with 0.04 m detection noise, a single estimate easily 
 with the simulation at *exactly* real time, the note still fired in 26 of 40 runs (ratios 86%-118%). Read the
 real-time factor from Gazebo's bottom bar instead. It only affects log text, never the control.
 
+
+### Phase 4: the learned predictor for the blind last metre (offline only)
+
+Add `--mdn` to the Phase 3c command to fly the LSTM-MDN's prediction instead of the tracker's extrapolation below ~1 m.
+**Not yet flown in Gazebo**: run it as an A/B against the same command without `--mdn` and report the
+`Ground truth at that instant` values.
+
+```bash
+cd /workspace/uav_rl_landing
+python3 -m mission.circular_landing_main --start-platform --fast --kz 3.0 --window 1.0 --camera-latency 0.09 --mdn
+```
+
+It needs only numpy (the weights are `prediction/weights/mdn_v2.npz`, no torch). Offline, on random paths at 1 m/s it
+lands within 0.45 m of the centre in about 78% of runs against 33% without it. `--mdn-point` picks which point of the
+predicted mixture is flown (default `peak`, the safe choice across motion types). `--mdn-gate` is experimental and did not
+help offline. Details, tables and limits: [`prediction/README.md`](../../../uav_rl_landing/prediction/README.md).
+
 ## Architecture
 
 ```

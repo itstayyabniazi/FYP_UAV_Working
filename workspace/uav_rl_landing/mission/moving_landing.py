@@ -39,9 +39,10 @@ Uses the same `io` interface as vision_landing.py plus:
     start_platform()                    tell the platform node to begin moving
 """
 import math
+from collections import deque
 from dataclasses import dataclass
 
-from mission.target_tracker import TargetTracker
+from mission.target_tracker import TargetState, TargetTracker
 from mission.vision_landing import VisionLander, VisionLandingConfig
 
 
@@ -95,6 +96,18 @@ class MovingLandingConfig(VisionLandingConfig):
     # straight-line extrapolation this (hardware-validated, straight-line) mission was tuned
     # against, byte for byte.
     tracker_curvature: bool = False
+    # Learned motion predictor (prediction/, opt-in; None = off = the behaviour above, unchanged). With a weights file
+    # the BLIND stretch (below servo_min_altitude, where the marker is out of view) flies the LSTM-MDN's prediction
+    # instead of the tracker's straight-line / constant-turn extrapolation. With mdn_gate_sigma set, the descent also
+    # PAUSES in the band just above the blind floor while the predictor says the platform's position a
+    # mdn_gate_horizon s from now is too uncertain (spread = sqrt(trace of the whole mixture's covariance)), for at
+    # most mdn_gate_max_hold seconds in total, then goes down anyway.
+    mdn_path: str = None
+    mdn_gate_sigma: float = None     # [m] hold the descent while the predicted spread exceeds this (None = no gate)
+    mdn_gate_horizon: float = 2.5    # [s] how far ahead the gate looks: about the blind stretch plus the touchdown
+    mdn_gate_band: float = 0.5       # [m] the gate acts between servo_min_altitude and servo_min_altitude + this
+    mdn_gate_max_hold: float = 15.0  # [s]
+    mdn_point: str = "mean"          # which point of the predicted mixture to fly: "mean", "best" (top-weight mode) or "peak" (densest)
 
 
 class MovingPlatformLander(VisionLander):
@@ -105,6 +118,13 @@ class MovingPlatformLander(VisionLander):
         self.tracker = TargetTracker(c.tracker_window, c.tracker_min_samples, c.tracker_min_span,
                                      c.tracker_max_speed, c.max_extrapolation, curvature=c.tracker_curvature)
         self.offset_at_contact = None         # [m] UAV vs ground-truth platform centre at the moment of contact
+        self.mdn = None
+        self._mdn_hist = deque()              # (t, north, east) detections, ~3 s: the predictor needs more than the tracker keeps
+        self._mdn_ctx = (None, None, None)    # (key, context, t_ref) cache: the network input only changes with new samples
+        self.gate_held = 0.0                  # [s] total time the MDN gate has paused the descent
+        if c.mdn_path:
+            from prediction.mdn_numpy import MDNPredictor     # imported here so a run without the predictor needs nothing extra
+            self.mdn = MDNPredictor.load(c.mdn_path)
 
     # -- hooks ------------------------------------------------------------
 
@@ -122,6 +142,43 @@ class MovingPlatformLander(VisionLander):
     def _feed_tracker(self):
         for t, x, y, received in self.io.drain_samples():
             self.tracker.update(t, x, y, received)
+            if self.mdn is not None:
+                self._mdn_hist.append((t, x, y))
+                while self._mdn_hist and self._mdn_hist[0][0] < t - 3.0:
+                    self._mdn_hist.popleft()
+
+    def _mdn_predict(self, now, ahead=0.0):
+        """The predictor's view of the platform at `now + ahead`: (Prediction, H) or (None, None). The tracker works
+        in NED (x = north, y = east); the predictor in ENU, so the axes are swapped on the way in and out."""
+        if self.mdn is None or len(self._mdn_hist) < 4:
+            return None, None
+        key = (len(self._mdn_hist), self._mdn_hist[-1][0])
+        if self._mdn_ctx[0] != key:
+            h = list(self._mdn_hist)
+            ctx, t_ref = self.mdn.prepare([e[0] for e in h], [e[2] for e in h], [e[1] for e in h])
+            self._mdn_ctx = (key, ctx, t_ref)
+        _, ctx, t_ref = self._mdn_ctx
+        if ctx is None:
+            return None, None
+        H = now + ahead - t_ref
+        if not 0.0 <= H <= 4.0:                      # outside what it was trained on: let the tracker handle it
+            return None, None
+        return self.mdn.predict_from(ctx, H), H
+
+    def _mdn_state(self, now):
+        """TargetState from the predictor for the blind stretch (None = fall back to the tracker)."""
+        pred, H = self._mdn_predict(now)
+        if pred is None:
+            return None
+        later, _ = self._mdn_predict(now, 0.25)
+        pick = {"mean": lambda p: (p.x, p.y), "best": lambda p: (p.best_x, p.best_y),
+                "peak": lambda p: (p.peak_x, p.peak_y)}[self.cfg.mdn_point]
+        x, y = pick(pred)
+        vn = ve = 0.0
+        if later is not None:
+            lx, ly = pick(later)
+            ve, vn = (lx - x) / 0.25, (ly - y) / 0.25
+        return TargetState(y, x, vn, ve, True, len(self._mdn_hist), now - self._mdn_hist[-1][0])
 
     # -- LOCK / DESCEND -----------------------------------------------------
 
@@ -142,6 +199,7 @@ class MovingPlatformLander(VisionLander):
         touchdown_since = None                # set when the touchdown phase begins
         contact_since = None
         warned_slow_gains = False
+        gate_holding = False
         self.log("LOCK: tracking the platform in velocity mode "
                  f"(kp={cfg.kp}, descent {cfg.descent_rate} m/s while aligned).")
 
@@ -156,6 +214,10 @@ class MovingPlatformLander(VisionLander):
             if fresh:
                 last_seen = now
             blind = alt <= cfg.servo_min_altitude
+            if blind and self.mdn is not None:
+                mdn_state = self._mdn_state(now)
+                if mdn_state is not None:
+                    state = mdn_state
             if state is None and blind and last_state is not None:
                 state = last_state            # blind and out of samples: finish the landing on the last estimate
             if state is None or (not fresh and not blind and now - last_seen > cfg.lost_timeout):
@@ -204,6 +266,26 @@ class MovingPlatformLander(VisionLander):
                                  "line instead, that one is not affected. Run moving_platform_node with "
                                  "-p use_sim_time:=true (vision_node README).")
 
+            # MDN descent gate: in the band just above the blind floor, pause while the predictor is unsure where the
+            # platform will be by the time we have crossed the blind stretch (hysteresis: resume below 0.8 x sigma).
+            gate_hold = False
+            if (self.mdn is not None and cfg.mdn_gate_sigma is not None and descending and fresh
+                    and cfg.servo_min_altitude < alt <= cfg.servo_min_altitude + cfg.mdn_gate_band):
+                gate_pred, _ = self._mdn_predict(now, cfg.mdn_gate_horizon)
+                if gate_pred is not None and self.gate_held < cfg.mdn_gate_max_hold:
+                    limit = cfg.mdn_gate_sigma * (0.8 if gate_holding else 1.0)
+                    gate_hold = gate_pred.spread > limit
+                    if gate_hold != gate_holding:
+                        self.log(f"  MDN gate: predicted spread {gate_pred.spread:.2f} m {'>' if gate_hold else '<='} "
+                                 f"{limit:.2f} m at {alt:.2f} m -> {'holding the descent' if gate_hold else 'descending'}"
+                                 f" ({self.gate_held:.1f} s held so far).")
+                    gate_holding = gate_hold
+                    if gate_hold:
+                        self.gate_held += cfg.dt
+                elif gate_holding:
+                    gate_holding = False
+                    self.log(f"  MDN gate: hold limit of {cfg.mdn_gate_max_hold:.0f} s reached -- descending anyway.")
+
             # Horizontal: feed-forward the platform's velocity, correct the position error.
             cmd_n = state.vx + cfg.kp * ex
             cmd_e = state.vy + cfg.kp * ey
@@ -224,7 +306,7 @@ class MovingPlatformLander(VisionLander):
                          f"{cfg.touchdown_rate} m/s until contact.")
             if touchdown_since is not None:
                 sp_alt = max(cfg.contact_floor, sp_alt - cfg.touchdown_rate * cfg.dt)
-            elif descending:
+            elif descending and not gate_hold:
                 rate = cfg.blind_descent_rate if blind else cfg.descent_rate
                 sp_alt = max(cfg.handoff_altitude, sp_alt - rate * cfg.dt)
             climb = max(-cfg.max_sink, min(cfg.max_climb, cfg.kz * (sp_alt - alt)))
@@ -295,4 +377,5 @@ class MovingPlatformLander(VisionLander):
             summary["offset_from_platform_centre"] = (dn, de)
         summary["ground_truth_unreliable"] = self.ground_truth_unreliable
         summary["offset_at_contact"] = self.offset_at_contact
+        summary["gate_held"] = self.gate_held
         return summary
