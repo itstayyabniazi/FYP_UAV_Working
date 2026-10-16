@@ -56,6 +56,15 @@ Full write-up and history: `README.md` (§3.3 is the Phase 3 moving-platform sto
   `travel_length` 30/40 (reversal lands on touchdown timing). Widen `--corners` to `travel_length + 2`.
 - The red cross on the platform is cosmetic; only the ArUco pattern is detected.
 
+- **Real lock-on trouble is mostly the fixed camera tilting.** Real logs: every marker dropout at 17-27 deg of tilt (5 m x
+  tan 24 deg = 2.2 m = the FOV half-width). `tests/fake_world.py` now has an opt-in tilt model (`max_accel=5.0, vel_tau=0.7`,
+  calibrated to the real logs: ~80-90 s per mission, ~1.5-2 failed lock attempts) and a `gimbal=True` switch for a stabilised
+  camera. Offline in that world: a gimbal cuts failed attempts ~60% (1.9 -> 0.8 per run) and mission time 90 -> 60 s.
+  **Fixed-camera scenario that locks reliably (offline, tilt world): platform turn rate <= 0.6 rad/s** (`-p max_turn_rate:=0.6`;
+  0 failed attempts, 31-36 s per mission at 0.8-1.0 m/s with `--fast --kz 3.0 --window 1.0`; turn rate 1.0 gives ~1.9 failed attempts,
+  ~90 s). The platform's turn rate, not its speed, is what breaks the lock.
+  Things that do NOT help (all tested): a flat command-acceleration cap (landed 1/36), a visibility-aware acceleration limit,
+  lower/higher `kp`, other tracker windows, looser `align_*` tolerances.
 - The MDN descent gate (`--mdn-gate`) did not help offline; keep it off. Use `--mdn-point peak` (the mixture mean fails on
   straight back-and-forth). The model is over-confident outside its training ranges.
 - Retraining changes the weights: regenerate `prediction/weights/reference_v2.npz` or the torch-parity test fails.

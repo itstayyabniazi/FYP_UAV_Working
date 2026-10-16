@@ -854,6 +854,71 @@ def test_mdn():
           r["outcome"] == "LANDED" and 0.0 < r["gate_held"] <= 6.5, f"{r['outcome']}, held {r['gate_held']:.1f} s")
 
 
+def test_tilt():
+    """The fake world's TILT model (tests/fake_world.py, max_accel=...): a body-fixed downward camera is swung opposite to
+    the acceleration by altitude * tan(tilt), so a hard chase of a turning platform throws the marker out of the picture.
+    Calibrated against the real logs of 2026-10-15..17 (1.0 m/s, turn rate 1.0, --fast --kz 3 --window 1.0): real missions
+    took 43-125 s (mean ~78) with ~1.7 failed lock attempts each; vel_tau=0.7 s with a 5 m/s^2 acceleration cap gives ~90 s
+    and ~1.9 failures here. A stabilised (gimbal) camera is the upper bound on what a fix could give."""
+    print("\n[tilt model: why locking on a turning platform is hard]")
+    arena = dict(center_x=9.0, center_y=6.0, half_x=3.0, half_y=7.0)
+    fast = dict(kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=1.0, align_speed_tol=0.6, realign_tol=0.8,
+                tracker_max_speed=2.5, kz=3.0)
+
+    def sweep(label, **world_kw):
+        n, fails, times = 12, 0, []
+        for seed in range(n):
+            w = FakeWorld(lambda t, sd=seed: random_state(t, speed=1.0, seed=sd, max_turn_rate=1.0, seg_min=3.0, seg_max=8.0, **arena),
+                          uav_start=(0.0, 9.0), noise=0.1, latency=0.09, assumed_latency=0.09, seed=seed, **world_kw)
+            msgs, t_air = [], [None]
+
+            def log(m, w=w, msgs=msgs, t_air=t_air):
+                if "Airborne" in m and t_air[0] is None:
+                    t_air[0] = w.t
+                msgs.append(m)
+            r = MovingPlatformLander(w, MovingLandingConfig(start_platform=True, mission_timeout=300, tracker_curvature=True, **fast),
+                                     log=log).run()
+            fails += sum(("Could not lock" in m) or ("Marker lost" in m) for m in msgs)
+            times.append(w.t - (t_air[0] or 0.0))
+        print(f"  {label}: {fails / n:.1f} failed lock attempts per run, mission {sum(times) / n:.0f} s (n={n})")
+        return fails / n, sum(times) / n
+
+    f0, t0 = sweep("no tilt model (the old fake world)")
+    f1, t1 = sweep("tilt model (5 m/s^2, response 0.7 s)", max_accel=5.0, vel_tau=0.7)
+    f2, t2 = sweep("tilt model + stabilised camera", max_accel=5.0, vel_tau=0.7, gimbal=True)
+    check("the old fake world could not show the lock-on trouble (it had no attitude)", f1 > f0 + 0.5, f"{f1:.1f} vs {f0:.1f}")
+    check("with tilt, missions take about as long as the real ones (43-125 s)", 60 <= t1 <= 130, f"{t1:.0f} s")
+    check("a stabilised camera removes most of the failed lock attempts", f2 < 0.6 * f1, f"{f2:.1f} vs {f1:.1f}")
+
+
+def test_platform_tracker_log():
+    """The platform tracker's bookkeeping (moving_platform/platform_tracker.py), without ROS."""
+    import tempfile
+    from moving_platform.platform_tracker import TrailLog
+    print("\n[platform tracker log]")
+    radius, omega = 2.0, 0.5
+    csv = os.path.join(tempfile.mkdtemp(), "track.csv")
+    log = TrailLog(csv_path=csv)
+    t = 0.0
+    while t <= 2 * math.pi / omega:
+        log.add(t, *circular_state(t, 9.5, 3.0, radius, omega))
+        t += 0.05
+    check("distance travelled over one lap matches 2*pi*r", abs(log.distance - 2 * math.pi * radius) < 0.1,
+          f"{log.distance:.2f} vs {2 * math.pi * radius:.2f} m")
+    check("history rows come on a fixed 1 s grid", all(abs(r[0] - round(r[0])) < 0.06 for r in log.history),
+          f"{[round(r[0], 2) for r in log.history[:4]]}")
+    check("a counter-clockwise circle reads as turning left, with the right radius",
+          "turning left" in log.motion_label() and "radius 2.0" in log.motion_label(), log.motion_label())
+    check("the map shows start and current marks", "S" in log.render() and "@" in log.render())
+    with open(csv) as f:
+        lines = f.read().strip().split("\n")
+    check("the CSV has a header and about 10 rows per second", lines[0].startswith("t,x_east") and 110 < len(lines) < 140,
+          f"{len(lines)} lines")
+    still = TrailLog()
+    still.add(0.0, 9.5, 6.0, 0.0, 0.0)
+    check("a platform that has not moved reports holding still", "HOLDING STILL" in still.motion_label())
+
+
 if __name__ == "__main__":
     test_tracker()
     test_position_history()
@@ -864,5 +929,7 @@ if __name__ == "__main__":
     test_circular()
     test_random()
     test_mdn()
+    test_tilt()
+    test_platform_tracker_log()
     print("\n" + ("ALL TESTS PASSED" if not failures else f"FAILED: {failures}"))
     sys.exit(1 if failures else 0)

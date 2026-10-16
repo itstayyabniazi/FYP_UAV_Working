@@ -6,6 +6,7 @@ expects (see that module's docstring), plus a preflight check. Reuses
 ResetManager for everything that talks to landing_controller / PX4, so the
 control path is exactly the one Phase 1's takeoff_and_land.py already proved.
 """
+import math
 import time
 from collections import deque
 
@@ -144,6 +145,12 @@ class RosMissionIO:
     def uav_position(self):
         s = self.reset._uav_state
         return (s.x, s.y, -s.z)
+
+    def uav_tilt(self):
+        """Angle [deg] between the UAV's up axis and vertical, from /uav/state roll and pitch (radians). The downward
+        camera is fixed to the body, so this is how far the view is swung off straight down."""
+        s = self.reset._uav_state
+        return math.degrees(math.acos(max(-1.0, min(1.0, math.cos(s.roll) * math.cos(s.pitch)))))
 
     def uav_speed(self):
         s = self.reset._uav_state

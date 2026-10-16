@@ -39,12 +39,48 @@ time). On the held-out ranges the model's errors are still lower than CTRV's, bu
 
 | Case | tracker | MDN (`peak`) |
 |---|---|---|
-| random 1.0 m/s, `--fast --kz 3.0`, n=60 | 32/60 within 0.75 m, 19/60 within 0.45 m, median 0.70 m | 56/60, 43/60, median 0.18 m |
-| random 1.0 m/s, camera noise 0.2 m, n=48 | 16/48, 7/48, median 1.11 m | 32/48, 25/48, median 0.42 m |
-| random 0.5 m/s, defaults + `--kz 3.0`, n=48 | 38/48, 20/48, median 0.46 m | 44/48, 37/48, median 0.24 m |
+| random 1.0 m/s, turn rate 0.6 rad/s, `--fast --kz 3.0`, n=60 | 32/60 within 0.75 m, 19/60 within 0.45 m, median 0.70 m | 56/60, 43/60, median 0.18 m |
+| random 1.0 m/s, turn rate 0.6, camera noise 0.2 m, n=48 | 16/48, 7/48, median 1.11 m | 32/48, 25/48, median 0.42 m |
+| random 0.5 m/s, turn rate 0.6, defaults + `--kz 3.0`, n=48 | 38/48, 20/48, median 0.46 m | 44/48, 37/48, median 0.24 m |
 | random 5 km/h (1.39 m/s), turn rate 1.0, n=48 | 3/48, 1/48, median 2.68 m | 16/48, 12/48, median 1.14 m (**still mostly misses**) |
+| random 1.0 m/s, **turn rate 1.0** (radius 1 m, the real-Gazebo launch), `--window 1.0`, noise 0.1 m, n=48 | 13/48, 8/48, median 1.15 m | 35/48, 27/48, median 0.37 m |
+| same, camera noise 0.2 m, n=48 | 11/48, 7/48, median 1.75 m | 25/48, 13/48, median 0.66 m |
 | circular 0.8 m/s, n=24 | 20/24, 13/24, median 0.42 m | 23/24 within 0.45 m, median 0.19 m |
 | linear 5 km/h back-and-forth over 50 m, n=18 | 14/18, 5/18, median 0.58 m | 18/18 within 0.45 m, median 0.09 m |
+
+## Real Gazebo so far
+
+Launch for all runs: random platform, 1.0 m/s, turn rate 1.0, `--fast --kz 3.0 --window 1.0`, platform node on sim time.
+
+| Date | Run | Result (ground truth at contact) |
+|---|---|---|
+| 2026-10-15 | 2x `--mdn` | `TELEMETRY_STALLED` (Gazebo ODE abort) while still at 5 m, before the predictor is used |
+| 2026-10-15 | 3x no `--mdn` | 0.40 m, 1.56 m, timeout after about ten failed lock attempts |
+| 2026-10-16 | `--mdn` | landed, **0.84 m** |
+| 2026-10-16 | `--mdn` | `TELEMETRY_STALLED` at 3.5 m (Gazebo, MDN not yet active) |
+| 2026-10-16 | `--mdn` | landed, **0.80 m** |
+| 2026-10-16 | no `--mdn` | landed, 1.02 m |
+| 2026-10-16/17 | 4x `--mdn` | landed, 0.88 / 0.17 / 0.77 / 0.33 m |
+| 2026-10-16/17 | 2x no `--mdn` | landed, 0.45 / 0.61 m |
+
+So far (same launch, turn rate 1.0): `--mdn` landings 0.17 / 0.33 / 0.77 / 0.80 / 0.84 / 0.88 m (median 0.79 m, n=6) against
+tracker-only 0.40 / 0.45 / 0.61 / 1.02 / 1.56 m (median 0.61 m, n=5). **The MDN has not shown a benefit in real Gazebo**;
+offline it was expected to have a median of 0.37 m against 1.15 m.
+
+**Why (from the contact diagnostic, 4 `--mdn` runs):** the MDN's prediction was 0.27-0.43 m from the true platform centre
+at contact (mean 0.36 m), the tracker's own extrapolation in the same runs 0.27-0.48 m (mean 0.36 m): equally good. The
+offline tracker extrapolation error was about 1.5 m, so the real blind stretch is much shorter than the fake world's 2 s
+(the real camera appears to keep the marker to a lower altitude), leaving the MDN little to improve. The other half of the
+miss is the UAV not reaching its own target (0.08-0.42 m from the prediction at contact). The mission now also logs
+`The marker was last detected N s before contact, at X m altitude` to measure the real blind stretch. Each run now logs
+`Distance to the ground-truth platform centre at contact`: UAV, tracker extrapolation and MDN prediction, so one `--mdn`
+run shows whether the predictor itself was right.
+
+**Lock-on is the dominant real-world problem.** The tilt log (`Marker dropped out of view ... UAV tilt N deg`) shows the
+marker leaving the image at 17-26 deg of tilt in every logged dropout (median ~23 deg), even at 0.2-1 m/s. At 5 m, 24 deg
+of tilt swings the fixed downward camera's view by 5 m x tan(24 deg) = 2.2 m, about the whole half-width of the field
+of view (2.25 m). The detector's position estimate is already tilt-corrected (`aruco_landing_target_node` rotates by
+roll/pitch), so this is the marker physically leaving the image. The fake world has no attitude, so it cannot show it.
 
 ## Choices that matter
 

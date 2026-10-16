@@ -189,6 +189,7 @@ class MovingPlatformLander(VisionLander):
         x, y, alt = io.uav_position()
         sp_alt = alt                          # altitude setpoint, slid down while aligned
         last_seen = io.now()
+        last_seen_alt = alt
         lock_started = last_seen
         descending = False
         locked = False
@@ -200,6 +201,8 @@ class MovingPlatformLander(VisionLander):
         contact_since = None
         warned_slow_gains = False
         gate_holding = False
+        tilt_of = getattr(io, "uav_tilt", None)      # log-only diagnostic (the fake world has no attitude)
+        was_fresh, last_drop_log = False, -10.0
         self.log("LOCK: tracking the platform in velocity mode "
                  f"(kp={cfg.kp}, descent {cfg.descent_rate} m/s while aligned).")
 
@@ -213,7 +216,15 @@ class MovingPlatformLander(VisionLander):
             fresh = self.tracker.fresh(now, cfg.fresh_age)
             if fresh:
                 last_seen = now
+                last_seen_alt = alt
             blind = alt <= cfg.servo_min_altitude
+            if tilt_of is not None and was_fresh and not fresh and not blind and now - last_drop_log > 2.0:
+                # Is the marker leaving the camera's view because the UAV tilts (fixed downward camera)?
+                last_drop_log = now
+                self.log(f"  Marker dropped out of view at {alt:.1f} m: UAV tilt {tilt_of():.0f} deg, speed "
+                         f"{math.hypot(vn, ve):.1f} m/s, error to the predicted position {math.hypot(state.x - x, state.y - y):.2f} m."
+                         if state is not None else f"  Marker dropped out of view at {alt:.1f} m: UAV tilt {tilt_of():.0f} deg.")
+            was_fresh = fresh
             if blind and self.mdn is not None:
                 mdn_state = self._mdn_state(now)
                 if mdn_state is not None:
@@ -332,6 +343,17 @@ class MovingPlatformLander(VisionLander):
                         self.offset_at_contact = math.hypot(ux - truth[0], uy - truth[1])
                         self.log(f"  Ground truth at that instant: {self.offset_at_contact:.2f} m from the platform "
                                  "centre (half-width 0.75 m). Meaningful only with the platform node on sim time.")
+                        # Who was right in the blind stretch? Each prediction's distance to the ground truth right now.
+                        parts = [f"UAV {self.offset_at_contact:.2f}"]
+                        tr = self.tracker.state(now)
+                        if tr is not None:
+                            parts.append(f"tracker extrapolation {math.hypot(tr.x - truth[0], tr.y - truth[1]):.2f}")
+                        ms = self._mdn_state(now) if self.mdn is not None else None
+                        if ms is not None:
+                            parts.append(f"MDN prediction {math.hypot(ms.x - truth[0], ms.y - truth[1]):.2f}")
+                        self.log("  Distance to the ground-truth platform centre at contact [m]: " + ", ".join(parts))
+                        self.log(f"  The marker was last detected {now - last_seen:.1f} s before contact, at {last_seen_alt:.2f} m "
+                                 "altitude: that is how long the UAV flew on a prediction.")
                     return "FINAL"
 
             if now - last_log >= cfg.progress_period:
