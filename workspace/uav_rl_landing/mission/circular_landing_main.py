@@ -162,11 +162,14 @@ against the plain straight-line extrapolation (Phase 3's original model) on the 
 platform.
 """
 import argparse
+import os
 
 import rclpy
 
 from mission.moving_landing import MovingLandingConfig, MovingPlatformLander
 from mission.ros_io import RosMissionIO
+
+DEFAULT_MDN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prediction", "weights", "mdn_v2.npz"))
 
 
 def parse_corner(text):
@@ -215,6 +218,19 @@ def main():
                              "cuts the horizontal command jitter by ~25% and the mission time (lock retries) from ~78 s to "
                              "~47 s; the price is a slightly slower reaction to sharp turns. Try 0.8-1.0 if the UAV jiggles "
                              "or keeps failing to lock with --fast. Opt-in; not run in real Gazebo yet.")
+    parser.add_argument("--mdn", nargs="?", const=DEFAULT_MDN, default=None, metavar="WEIGHTS",
+                        help="fly the learned LSTM-MDN motion predictor (prediction/) through the blind last metre instead "
+                             "of the tracker's straight-line / turning-arc extrapolation. Optional path to a weights .npz "
+                             f"(default {DEFAULT_MDN}). Offline: on random paths at 1 m/s it lands within 0.45 m of the "
+                             "platform centre ~3/4 of the time vs ~1/3 for the tracker. Opt-in; not run in real Gazebo yet.")
+    parser.add_argument("--mdn-point", choices=("mean", "best", "peak"), default="peak",
+                        help="which point of the predicted mixture to fly: 'peak' (densest point, default; never worse than "
+                             "the tracker offline on random, circular or linear motion), 'mean' (best on turning paths, "
+                             "poor on straight back-and-forth), 'best' (top-weight mode).")
+    parser.add_argument("--mdn-gate", type=float, default=None, metavar="SIGMA",
+                        help="EXPERIMENTAL: pause the descent just above the blind floor while the predictor's spread [m] "
+                             "exceeds SIGMA (needs --mdn). Offline it did not improve landings and cost 10-15 s, so it is "
+                             "off by default.")
     parser.add_argument("--no-ground-truth", action="store_true",
                         help="don't cross-check the camera against /platform/state or report the final offset")
     args = parser.parse_args()
@@ -257,6 +273,13 @@ def main():
         overrides["kz"] = args.kz
     if args.window is not None:
         overrides["tracker_window"] = args.window
+    if args.mdn:
+        overrides["mdn_path"] = args.mdn
+        overrides["mdn_point"] = args.mdn_point
+        if args.mdn_gate is not None:
+            overrides["mdn_gate_sigma"] = args.mdn_gate
+    elif args.mdn_gate is not None:
+        parser.error("--mdn-gate needs --mdn")
     if overrides:
         io.log(f"Overrides on top of the control profile: {overrides}")
     config = MovingLandingConfig(

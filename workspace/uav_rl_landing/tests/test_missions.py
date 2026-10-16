@@ -11,6 +11,8 @@ import os
 import random
 import sys
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "ros2_ws", "src", "moving_platform"))
 
 from moving_platform.trajectories import circular_state, linear_state, random_state  # the same code the ROS node runs
@@ -18,6 +20,9 @@ from mission.moving_landing import MovingLandingConfig, MovingPlatformLander
 from mission.target_tracker import PositionHistory, TargetState, TargetTracker, fit_camera_latency
 from mission.vision_landing import VisionLander, VisionLandingConfig
 from tests.fake_world import FakeWorld
+from prediction.datagen import make_dataset
+from prediction.features import build_features
+from prediction.mdn_numpy import MDNPredictor
 
 VERBOSE = "-v" in sys.argv
 failures = []
@@ -566,7 +571,7 @@ def test_circular():
 
 
 def run_random_sweep(title, n, speed, noise=0.04, fast=False, turn=0.6, segs=(3.0, 8.0), curvature=False,
-                     arena=None, perfect_tracker=False, kz=None):
+                     arena=None, perfect_tracker=False, kz=None, extra=None, quiet=False):
     """Mission against random_state paths, one seed per run (the seed IS the arrival phase here).
 
     Judged on the TRUE offset at contact (the UAV vs the platform's real centre at that instant, from the
@@ -580,6 +585,7 @@ def run_random_sweep(title, n, speed, noise=0.04, fast=False, turn=0.6, segs=(3.
                   realign_tol=0.8, tracker_max_speed=2.5) if fast else {}
     if kz is not None:
         cfg_kw["kz"] = kz
+    cfg_kw.update(extra or {})                # e.g. the learned predictor: mdn_path, mdn_gate_sigma
     landed, on, offsets = 0, 0, []
     for seed in range(n):
         world = FakeWorld(lambda t, sd=seed: random_state(t, speed=speed, seed=sd, max_turn_rate=turn,
@@ -747,6 +753,172 @@ def test_random():
           f"{time_long:.0f} vs {time_short:.0f} s")
 
 
+MDN_WEIGHTS = os.path.join(os.path.dirname(__file__), "..", "prediction", "weights", "mdn_v2.npz")
+
+
+def run_platform_sweep(title, n, platform_fn, noise=0.1, fast=True, kz=3.0, curvature=True, extra=None, uav_start=(0.0, 0.0),
+                       corners=None):
+    """Like run_random_sweep but for any platform function. Returns (share within 0.75 m, share within 0.45 m, offsets)."""
+    cfg_kw = dict(kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=0.6, align_speed_tol=0.6,
+                  realign_tol=0.8, tracker_max_speed=2.5) if fast else {}
+    cfg_kw["kz"] = kz
+    if corners:
+        cfg_kw["patrol_corners"] = corners
+    cfg_kw.update(extra or {})
+    offsets = []
+    for seed in range(n):
+        world = FakeWorld(lambda t, sd=seed: platform_fn(t, sd), uav_start=uav_start, noise=noise, latency=0.09,
+                          assumed_latency=0.09, seed=seed)
+        r = MovingPlatformLander(world, MovingLandingConfig(start_platform=True, mission_timeout=300,
+                                                            tracker_curvature=curvature, **cfg_kw),
+                                 log=lambda m: None).run()
+        offsets.append(r["offset_at_contact"] if r["outcome"] == "LANDED" and r.get("offset_at_contact") is not None else 99.0)
+    on75 = sum(o <= 0.75 for o in offsets) / n
+    on45 = sum(o <= 0.45 for o in offsets) / n
+    med = sorted(offsets)[n // 2]
+    print(f"\n[{title}] within 0.75 m {on75:.0%}, within 0.45 m {on45:.0%}, median true offset {med:.2f} m  (n={n})")
+    return on75, on45, offsets
+
+
+def test_mdn():
+    """Phase 4: the learned LSTM-MDN motion predictor (prediction/), opt-in via MovingLandingConfig.mdn_path.
+    Everything here is OFFLINE (FakeWorld), judged on the TRUE offset at contact, and compared on identical seeds with
+    the tracker it replaces for the blind last metre."""
+    print("\n[LSTM-MDN motion predictor]")
+    # -- the numpy forward pass reproduces the torch model that was trained (reference outputs stored with the weights)
+    ref = np.load(os.path.join(os.path.dirname(MDN_WEIGHTS), "reference_v2.npz"))
+    mdn = MDNPredictor.load(MDN_WEIGHTS)
+    worst = 0.0
+    for i in range(len(ref["H"])):
+        out = mdn.forward(ref["seq"][i], float(ref["H"][i]))
+        for got, want in zip(out, (ref["pi"][i], ref["mu"][i], ref["sigma"][i], ref["rho"][i])):
+            worst = max(worst, float(np.abs(got - want).max()))
+    check("numpy forward pass matches the torch reference", worst < 1e-4, f"max difference {worst:.1e}")
+
+    # -- the frame handling: rotating the whole observed track must rotate the prediction (no hidden dependence on
+    # where the platform is or which way it faces)
+    data = make_dataset(6, "val", seed=3, workers=1, keep_raw=True)
+    worst_rot = 0.0
+    for raw, H in list(zip(data["raw"], data["H"]))[:12]:
+        ts, xs, ys = raw
+        p0 = mdn.predict(ts, xs, ys, float(H))
+        a = math.radians(57.0)
+        c, s = math.cos(a), math.sin(a)
+        xr, yr = c * np.asarray(xs) - s * np.asarray(ys), s * np.asarray(xs) + c * np.asarray(ys)
+        p1 = mdn.predict(ts, xr, yr, float(H))
+        want = (c * p0.x - s * p0.y, s * p0.x + c * p0.y)
+        worst_rot = max(worst_rot, math.hypot(p1.x - want[0], p1.y - want[1]))
+    check("prediction is rotation-equivariant", worst_rot < 0.05, f"worst {worst_rot:.3f} m")
+    check("too little data gives no prediction", build_features([0.0, 0.1], [0.0, 0.0], [0.0, 0.0]) is None)
+
+    # -- OFF by default: nothing about the proven missions changes unless mdn_path is set
+    world = FakeWorld(lambda t: (10.0, 0.0, 0.0, 0.0))
+    check("predictor is off by default", MovingPlatformLander(world, MovingLandingConfig(), log=lambda m: None).mdn is None)
+
+    # -- missions, tracker vs predictor on identical seeds
+    arena = dict(center_x=9.0, center_y=6.0, half_x=3.0, half_y=7.0)
+    rnd = lambda t, sd: random_state(t, speed=1.0, seed=sd, max_turn_rate=0.6, seg_min=3.0, seg_max=8.0, **arena)
+    base75, base45, _ = run_platform_sweep("random 1.0 m/s --fast: tracker", 36, rnd, uav_start=(0.0, 9.0))
+    mdn75, mdn45, _ = run_platform_sweep("random 1.0 m/s --fast: MDN (peak)", 36, rnd, uav_start=(0.0, 9.0),
+                                         extra=dict(mdn_path=MDN_WEIGHTS, mdn_point="peak"))
+    check("MDN is no worse than the tracker at landing a turning 1.0 m/s platform on target (within 0.75 m)",
+          mdn75 >= 0.75 and mdn75 >= base75, f"{mdn75:.0%} vs {base75:.0%}")
+    check("...and much more often fully on it (within 0.45 m)", mdn45 >= base45 + 0.25, f"{mdn45:.0%} vs {base45:.0%}")
+
+    circ = lambda t, sd: circular_state(t, 9.5, 3.0, 2.0, 0.8 / 2.0)
+    c75, c45, _ = run_platform_sweep("circular 0.8 m/s --fast: MDN (peak)", 8, circ,
+                                     extra=dict(mdn_path=MDN_WEIGHTS, mdn_point="peak"))
+    check("no regression on circular motion", c75 >= 0.85, f"{c75:.0%} within 0.75 m")
+
+    # the hardware-validated linear case: 5 km/h back and forth over 50 m
+    lin = lambda t, sd: linear_state(t, 9.0, 0.0, 90.0, 1.39, 50.0)
+    corners = ((0.0, 0.0), (0.0, 9.0), (52.0, 9.0), (52.0, 0.0))
+    l75, l45, _ = run_platform_sweep("linear 5 km/h --fast --no-curvature: MDN (peak)", 6, lin, kz=1.0, curvature=False,
+                                     corners=corners, extra=dict(mdn_path=MDN_WEIGHTS, mdn_point="peak"))
+    check("no regression on the validated linear 5 km/h case", l75 >= 0.83, f"{l75:.0%} within 0.75 m")
+
+    # -- 5 km/h on a TURNING platform stays open: better, not solved
+    fast_rnd = lambda t, sd: random_state(t, speed=1.39, seed=sd, max_turn_rate=1.0, seg_min=3.0, seg_max=8.0, **arena)
+    f75, _, _ = run_platform_sweep("random 1.39 m/s (5 km/h), tight turns: MDN (peak)", 12, fast_rnd, uav_start=(0.0, 9.0),
+                                   extra=dict(mdn_path=MDN_WEIGHTS, mdn_point="peak"))
+    check("5 km/h on a tightly turning random path is still an open problem (most miss)", f75 < 0.6, f"{f75:.0%}")
+
+    # -- the experimental descent gate runs, holds, and still lands (it is NOT expected to improve accuracy)
+    world = FakeWorld(lambda t: random_state(t, speed=1.0, seed=4, max_turn_rate=0.6, seg_min=3.0, seg_max=8.0, **arena),
+                      uav_start=(0.0, 9.0), noise=0.1, latency=0.09, assumed_latency=0.09, seed=4)
+    cfg = MovingLandingConfig(start_platform=True, mission_timeout=300, tracker_curvature=True, kz=3.0, kp=3.0, max_accel=5.0,
+                              max_speed=4.0, tracker_window=0.6, align_speed_tol=0.6, realign_tol=0.8,
+                              mdn_path=MDN_WEIGHTS, mdn_gate_sigma=0.9, mdn_gate_max_hold=6.0)
+    r = MovingPlatformLander(world, cfg, log=lambda m: None).run()
+    check("the experimental MDN gate holds the descent, for at most its limit, and the UAV still lands",
+          r["outcome"] == "LANDED" and 0.0 < r["gate_held"] <= 6.5, f"{r['outcome']}, held {r['gate_held']:.1f} s")
+
+
+def test_tilt():
+    """The fake world's TILT model (tests/fake_world.py, max_accel=...): a body-fixed downward camera is swung opposite to
+    the acceleration by altitude * tan(tilt), so a hard chase of a turning platform throws the marker out of the picture.
+    Calibrated against the real logs of 2026-10-15..17 (1.0 m/s, turn rate 1.0, --fast --kz 3 --window 1.0): real missions
+    took 43-125 s (mean ~78) with ~1.7 failed lock attempts each; vel_tau=0.7 s with a 5 m/s^2 acceleration cap gives ~90 s
+    and ~1.9 failures here. A stabilised (gimbal) camera is the upper bound on what a fix could give."""
+    print("\n[tilt model: why locking on a turning platform is hard]")
+    arena = dict(center_x=9.0, center_y=6.0, half_x=3.0, half_y=7.0)
+    fast = dict(kp=3.0, max_accel=5.0, max_speed=4.0, tracker_window=1.0, align_speed_tol=0.6, realign_tol=0.8,
+                tracker_max_speed=2.5, kz=3.0)
+
+    def sweep(label, **world_kw):
+        n, fails, times = 12, 0, []
+        for seed in range(n):
+            w = FakeWorld(lambda t, sd=seed: random_state(t, speed=1.0, seed=sd, max_turn_rate=1.0, seg_min=3.0, seg_max=8.0, **arena),
+                          uav_start=(0.0, 9.0), noise=0.1, latency=0.09, assumed_latency=0.09, seed=seed, **world_kw)
+            msgs, t_air = [], [None]
+
+            def log(m, w=w, msgs=msgs, t_air=t_air):
+                if "Airborne" in m and t_air[0] is None:
+                    t_air[0] = w.t
+                msgs.append(m)
+            r = MovingPlatformLander(w, MovingLandingConfig(start_platform=True, mission_timeout=300, tracker_curvature=True, **fast),
+                                     log=log).run()
+            fails += sum(("Could not lock" in m) or ("Marker lost" in m) for m in msgs)
+            times.append(w.t - (t_air[0] or 0.0))
+        print(f"  {label}: {fails / n:.1f} failed lock attempts per run, mission {sum(times) / n:.0f} s (n={n})")
+        return fails / n, sum(times) / n
+
+    f0, t0 = sweep("no tilt model (the old fake world)")
+    f1, t1 = sweep("tilt model (5 m/s^2, response 0.7 s)", max_accel=5.0, vel_tau=0.7)
+    f2, t2 = sweep("tilt model + stabilised camera", max_accel=5.0, vel_tau=0.7, gimbal=True)
+    check("the old fake world could not show the lock-on trouble (it had no attitude)", f1 > f0 + 0.5, f"{f1:.1f} vs {f0:.1f}")
+    check("with tilt, missions take about as long as the real ones (43-125 s)", 60 <= t1 <= 130, f"{t1:.0f} s")
+    check("a stabilised camera removes most of the failed lock attempts", f2 < 0.6 * f1, f"{f2:.1f} vs {f1:.1f}")
+
+
+def test_platform_tracker_log():
+    """The platform tracker's bookkeeping (moving_platform/platform_tracker.py), without ROS."""
+    import tempfile
+    from moving_platform.platform_tracker import TrailLog
+    print("\n[platform tracker log]")
+    radius, omega = 2.0, 0.5
+    csv = os.path.join(tempfile.mkdtemp(), "track.csv")
+    log = TrailLog(csv_path=csv)
+    t = 0.0
+    while t <= 2 * math.pi / omega:
+        log.add(t, *circular_state(t, 9.5, 3.0, radius, omega))
+        t += 0.05
+    check("distance travelled over one lap matches 2*pi*r", abs(log.distance - 2 * math.pi * radius) < 0.1,
+          f"{log.distance:.2f} vs {2 * math.pi * radius:.2f} m")
+    check("history rows come on a fixed 1 s grid", all(abs(r[0] - round(r[0])) < 0.06 for r in log.history),
+          f"{[round(r[0], 2) for r in log.history[:4]]}")
+    check("a counter-clockwise circle reads as turning left, with the right radius",
+          "turning left" in log.motion_label() and "radius 2.0" in log.motion_label(), log.motion_label())
+    check("the map shows start and current marks", "S" in log.render() and "@" in log.render())
+    with open(csv) as f:
+        lines = f.read().strip().split("\n")
+    check("the CSV has a header and about 10 rows per second", lines[0].startswith("t,x_east") and 110 < len(lines) < 140,
+          f"{len(lines)} lines")
+    still = TrailLog()
+    still.add(0.0, 9.5, 6.0, 0.0, 0.0)
+    check("a platform that has not moved reports holding still", "HOLDING STILL" in still.motion_label())
+
+
 if __name__ == "__main__":
     test_tracker()
     test_position_history()
@@ -756,5 +928,8 @@ if __name__ == "__main__":
     test_moving()
     test_circular()
     test_random()
+    test_mdn()
+    test_tilt()
+    test_platform_tracker_log()
     print("\n" + ("ALL TESTS PASSED" if not failures else f"FAILED: {failures}"))
     sys.exit(1 if failures else 0)

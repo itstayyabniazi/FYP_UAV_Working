@@ -47,6 +47,7 @@ setup(
     entry_points={
         'console_scripts': [
             'moving_platform_node = moving_platform.moving_platform_node:main',
+            'platform_tracker = moving_platform.platform_tracker:main',
         ],
     },
 )

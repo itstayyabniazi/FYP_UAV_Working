@@ -87,7 +87,8 @@ node-by-node launch sequence.
 | **1** | Take off and land on a **static platform whose coordinates are hard-coded** in the code | **Completed** (verified in simulation) |
 | **2** | Take off, **search for the platform's ArUco marker with the downward camera**, and land on it — no coordinates given to the drone | **Completed** (verified in simulation) — see [§3.2](#32-phase-2--camera-guided-landing-on-a-static-platform-completed) |
 | **3** | Land on a **moving platform**, with both **linear** and **circular** motion | **Linear completed** (verified in simulation, 4/4 landings at 0.3-0.4 m/s; **5 km/h real-Gazebo-validated 3/3 with `--fast`**); **circular implemented; real-Gazebo landed at 0.45–1.0 m/s but only judged against the tracker's own prediction, 5 km/h NOT validated (true offset offline: median 1.7 m)**; **random motion (Phase 3c): real-Gazebo validated at 0.3 m/s (2/2) and at 0.5 m/s with `--kz 3.0` (5/5, offset 0.05–0.39 m)**; see [§3.3](#33-phase-3--landing-on-a-moving-platform-linear-motion-completed) |
-| 4+ | RL-controlled approach (the Q-learning work in §3.4), real hardware | Not started |
+| **4** | **Learned motion prediction (LSTM-MDN)** for the blind last metre of the landing, so the UAV can follow a randomly turning platform | **Implemented; offline only, NOT flown in Gazebo yet.** On random paths at 1 m/s it lands within 0.45 m of the platform centre in 78% of offline runs vs 33% for the tracker; see [`prediction/`](workspace/uav_rl_landing/prediction/README.md) |
+| 5+ | RL-controlled approach (the Q-learning work in §3.4), real hardware | Not started |
 
 ### 3.1 Phase 1 — takeoff and landing on hard-coded platform coordinates (completed)
 
@@ -352,6 +353,19 @@ real runs above. Offline it is only partly there at 0.8–1.0 m/s with `--fast` 
 sharp zig-zag at 0.5 m/s and above (the tracker's velocity estimate is the bottleneck: a perfect tracker lands
 12/12) and anything near 5 km/h on a turning platform. Details, the full table and the commands: the
 [`vision_node` README, "Phase 3c"](workspace/ros2_ws/src/vision_node/README.md).
+
+**Phase 4: a learned motion predictor (LSTM-MDN), offline only so far.** Below about 1 m the marker leaves the camera
+view, so the last 2 to 3.5 s of a landing fly a *prediction* of the platform; on a turning platform the tracker's
+straight-line or constant-turn extrapolation is what misses. A small LSTM with a mixture-density head
+([`prediction/`](workspace/uav_rl_landing/prediction/README.md)) now predicts the platform's position as a mixture of
+Gaussians from the last 2 s of noisy detections, trained on unlimited synthetic tracks (random, circular and linear
+motion, with simulated camera noise and latency). Opt-in with `--mdn`; off by default, so every validated mission is
+unchanged. In the offline fake world, judged on the true offset at contact and on identical seeds: random 1.0 m/s
+`--fast` lands within 0.45 m of the centre in 78% of runs against 33% for the tracker (within 0.75 m: 89% against 56%);
+circular 0.8 m/s 8/8 and the hardware-validated linear 5 km/h 6/6 stay on target. Honest limits: **not flown in
+Gazebo**; 5 km/h on a tightly turning path is still mostly missed (33% within 0.75 m offline); the uncertainty-based
+descent gate did not help and is off; outside its training ranges the model is over-confident. The training data comes
+from our own generator, so real-motion generalisation is untested.
 
 ### 3.4 Earlier work (ROS 2 pipeline, RL agent, moving platform, vision pipeline)
 

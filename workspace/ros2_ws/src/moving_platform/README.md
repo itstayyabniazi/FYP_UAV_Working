@@ -33,6 +33,29 @@ default, simulation time with `-p use_sim_time:=true` (needs the `/clock` bridge
 speed") -- use that when Gazebo's real-time factor is below 1, or the analytic ground truth drifts ahead of the model. After changing the package: `colcon build --packages-select
 moving_platform` and re-source.
 
+## Platform tracker (live trajectory log in its own terminal)
+
+`platform_tracker` listens to `/platform/state` and shows, in a separate terminal, where the platform is now and where it
+has been: the current position in both Gazebo ENU (east, north) and the mission's NED (north, east), speed, compass bearing,
+whether it is going straight or turning (with the turning radius), distance travelled, a table of past positions (one row per
+second by default) and a top-down ASCII map of the whole path (`S` start, `@` now). It only listens, so it can be started or
+restarted at any time.
+
+```bash
+ros2 run moving_platform platform_tracker --ros-args -p use_sim_time:=true            # live dashboard
+ros2 run moving_platform platform_tracker --ros-args -p use_sim_time:=true -p csv_path:=/workspace/platform_track.csv
+ros2 run moving_platform platform_tracker --ros-args -p plain:=true                   # scrolling lines instead of redraw
+```
+
+Stop it with **Ctrl+C** (press it a second time if it has not exited within a second; it then force-quits). Ctrl+Z only
+suspends it. From another terminal: `pkill -9 -f platform_tracker`.
+
+Other parameters: `history_period` (s, 1.0), `history_rows` (shown, 14), `csv_period` (s, 0.1), `map_width`, `map_height`.
+To open it with the other simulation terminals, add `"8-Platform-Tracker"` to `LABELS`, the command above to `CMDS`, and
+`"moving_platform platform_tracker"` to `KILL_PATTERNS` in `scripts/run_sim_terminals.sh`. After pulling this change run
+`colcon build --packages-select moving_platform` once to register the command. Preview without ROS or Gazebo:
+`python3 -m moving_platform.platform_tracker --demo --seconds 60 --seed 5 --speed 1.0`.
+
 ## Random motion
 
 `-p motion:=random` drives the platform along a random but smooth, car-like path: constant `speed`, a chain of

@@ -560,6 +560,39 @@ outside +-3%; at 0.3 m/s, with 0.04 m detection noise, a single estimate easily 
 with the simulation at *exactly* real time, the note still fired in 26 of 40 runs (ratios 86%-118%). Read the
 real-time factor from Gazebo's bottom bar instead. It only affects log text, never the control.
 
+
+### Phase 4: the learned predictor for the blind last metre (offline only)
+
+Add `--mdn` to the Phase 3c command to fly the LSTM-MDN's prediction instead of the tracker's extrapolation below ~1 m.
+**Not yet flown in Gazebo**: run it as an A/B against the same command without `--mdn` and report the
+`Ground truth at that instant` values.
+
+```bash
+cd /workspace/uav_rl_landing
+python3 -m mission.circular_landing_main --start-platform --fast --kz 3.0 --window 1.0 --camera-latency 0.09 --mdn
+```
+
+It needs only numpy (the weights are `prediction/weights/mdn_v2.npz`, no torch). Offline, on random paths at 1 m/s it
+lands within 0.45 m of the centre in about 78% of runs against 33% without it. `--mdn-point` picks which point of the
+predicted mixture is flown (default `peak`, the safe choice across motion types). `--mdn-gate` is experimental and did not
+help offline. Details, tables and limits: [`prediction/README.md`](../../../uav_rl_landing/prediction/README.md).
+
+### Fixed-camera lock-on: use a gentler turn rate (offline-validated 2026-10-17)
+
+The real logs show the marker leaving the picture at 17-27 deg of UAV tilt (the downward camera is fixed to the body).
+In a fake world calibrated to those logs the platform's **turn rate** decides whether locking works: `-p max_turn_rate:=1.0`
+(1 m turning radius at 1 m/s) gives ~1.9 failed 25 s lock attempts and ~90 s per mission, `-p max_turn_rate:=0.6` gives none
+and ~35 s. Suggested platform node command for the next real runs (0.8 m/s; the node will warn that the arena is a little
+small for the turning radius, which is expected):
+
+```bash
+ros2 run moving_platform moving_platform_node --ros-args -p use_sim_time:=true -p motion:=random -p speed:=0.8 \
+  -p arena_x:=9.0 -p arena_y:=6.0 -p arena_half_x:=3.0 -p arena_half_y:=7.0 -p max_turn_rate:=0.6 -p wait_for_start:=true
+```
+
+Mission command unchanged (`--fast --kz 3.0 --window 1.0 --camera-latency 0.09`, with and without `--mdn`). Offline at 0.8 m/s,
+turn rate 0.6: within 0.75 m of the centre 62% (tracker) vs 94% (`--mdn`).
+
 ## Architecture
 
 ```
